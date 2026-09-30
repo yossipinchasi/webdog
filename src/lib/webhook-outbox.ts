@@ -16,6 +16,7 @@ import { db } from "./db";
 import * as schema from "./db/schema";
 import { newId } from "./ids";
 import { WEBHOOK_USER_AGENT } from "./product-info";
+import { OutboundBlockedError, postJson } from "./outbound-guard";
 import {
   isPermanentFailure,
   nextRetryDelayMs,
@@ -56,9 +57,15 @@ export async function enqueueWebhook(
   return id;
 }
 
-export type SendResult = { ok: boolean; statusCode: number | null; error: string | null };
+export type SendResult = {
+  ok: boolean;
+  statusCode: number | null;
+  error: string | null;
+  /** The target is refused outright (SSRF guard); retrying cannot succeed. */
+  blocked?: boolean;
+};
 
-/** One signed POST. Never throws. */
+/** One signed POST through the SSRF guard (no private targets, no redirects). Never throws. */
 export async function postSignedWebhook(p: {
   url: string;
   secret: string;
@@ -68,8 +75,7 @@ export async function postSignedWebhook(p: {
   attempt: number;
 }): Promise<SendResult> {
   try {
-    const res = await fetch(p.url, {
-      method: "POST",
+    const res = await postJson(p.url, p.body, {
       headers: {
         "Content-Type": "application/json",
         "User-Agent": WEBHOOK_USER_AGENT,
@@ -78,16 +84,18 @@ export async function postSignedWebhook(p: {
         "X-Watcher-Attempt": String(p.attempt),
         "X-Watcher-Signature": signatureHeader(p.secret, p.body, Math.floor(Date.now() / 1000)),
       },
-      body: p.body,
-      redirect: "manual",
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      timeoutMs: FETCH_TIMEOUT_MS,
     });
-    if (res.ok) return { ok: true, statusCode: res.status, error: null };
-    const text = (await res.text().catch(() => "")).trim();
+    if (res.status >= 200 && res.status < 300) return { ok: true, statusCode: res.status, error: null };
+    const text = res.body.trim();
     const snippet = text ? `: ${text.slice(0, MAX_ERROR_CHARS)}` : "";
     return { ok: false, statusCode: res.status, error: `HTTP ${res.status}${snippet}` };
   } catch (err) {
-    const message = err instanceof Error ? (err.name === "TimeoutError" ? "Timed out" : err.message) : String(err);
+    if (err instanceof OutboundBlockedError) {
+      return { ok: false, statusCode: null, error: `Blocked: ${err.message}`.slice(0, MAX_ERROR_CHARS), blocked: true };
+    }
+    const timedOut = err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+    const message = timedOut ? "Timed out" : err instanceof Error ? err.message : String(err);
     return { ok: false, statusCode: null, error: message.slice(0, MAX_ERROR_CHARS) };
   }
 }
@@ -131,7 +139,8 @@ async function recordOutcome(row: Claimed, result: SendResult, secretMissing: bo
       .where(eq(schema.webhookDelivery.id, row.id));
     return "delivered";
   }
-  const delay = secretMissing || isPermanentFailure(result.statusCode) ? null : nextRetryDelayMs(row.attempts);
+  const permanent = secretMissing || result.blocked || isPermanentFailure(result.statusCode);
+  const delay = permanent ? null : nextRetryDelayMs(row.attempts);
   await db
     .update(schema.webhookDelivery)
     .set({

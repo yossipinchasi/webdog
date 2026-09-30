@@ -89,6 +89,12 @@ test("environment: shared database + secrets on both; the worker gets the web ap
   assert.deepEqual(worker.variables?.SNAPSHOT_RETENTION_DAYS, { type: "literal", value: "90" });
 });
 
+test("production never enables the SSRF development override", async () => {
+  const { web, worker } = await load();
+  assert.equal(web.variables?.WEBHOOK_ALLOW_PRIVATE_ADDRESSES, undefined);
+  assert.equal(worker.variables?.WEBHOOK_ALLOW_PRIVATE_ADDRESSES, undefined);
+});
+
 test("no secret values are written in the file", async () => {
   const { resources } = await load();
   const literals = resources.flatMap((r) =>

@@ -7,6 +7,7 @@ import { badRequest, getApiUser, parseJson, requireApiUserWithWriteOwner } from 
 import { accountOwnerColumnAccessible } from "@/lib/account-access";
 import { newId } from "@/lib/ids";
 import { isValidAlertWebhookUrl } from "@/lib/notify-outbound-webhook";
+import { checkOutboundUrl } from "@/lib/outbound-guard";
 import { normalizeResendToEmailsForStorage } from "@/lib/notify-resend";
 import { isValidSlackIncomingWebhookUrl } from "@/lib/notify-slack";
 import { isResendSendFromEmailManagedByEnv } from "@/lib/server-managed-config";
@@ -109,6 +110,8 @@ export async function POST(req: Request) {
     if (!isValidAlertWebhookUrl(url)) {
       return badRequest("alertWebhookUrl must be a valid http(s) URL");
     }
+    const allowed = await checkOutboundUrl(url);
+    if (!allowed.ok) return badRequest(`This webhook URL is not allowed: ${allowed.reason}`);
     await db.insert(schema.notificationDestination).values({
       id,
       userId: ownerId,

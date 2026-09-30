@@ -7,8 +7,9 @@ import { badRequest, notFound, parseJson, requireApiUserWithWriteOwner } from "@
 import {
   ALERT_WEBHOOK_TEST_BODY,
   isValidAlertWebhookUrl,
-  postAlertWebhookJson,
 } from "@/lib/notify-outbound-webhook";
+import { postAlertWebhookJson } from "@/lib/notify-outbound-webhook.server";
+import { OutboundBlockedError } from "@/lib/outbound-guard";
 import { isValidSlackIncomingWebhookUrl, postSlackIncomingWebhook } from "@/lib/notify-slack";
 import { authPublicBaseUrl } from "@/lib/auth";
 import { buildSampleNewAlertsEmailPayload, renderNewAlertsEmail } from "@/lib/new-alerts-email";
@@ -75,7 +76,10 @@ export async function POST(req: Request) {
     }
     try {
       await postAlertWebhookJson(url, ALERT_WEBHOOK_TEST_BODY);
-    } catch {
+    } catch (err) {
+      if (err instanceof OutboundBlockedError) {
+        return badRequest(`This webhook URL is not allowed: ${err.message}`);
+      }
       return NextResponse.json({ error: "Webhook delivery failed" }, { status: 502 });
     }
     return NextResponse.json({ ok: true });

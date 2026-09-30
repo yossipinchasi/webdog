@@ -8,6 +8,7 @@ import { authenticateApiClient, isUniqueViolation, parseV1Json, v1Error } from "
 import { minutesToHours, updateWatchSchema } from "@/lib/v1/watch-format";
 import { accountAiConfig, loadWatch, rowToWatchJson } from "@/lib/v1/watches";
 import { conditionConfigError, parseStoredCondition } from "@/lib/watch-conditions";
+import { checkOutboundUrl } from "@/lib/outbound-guard";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -42,6 +43,11 @@ export async function PATCH(req: Request, { params }: Params) {
     const aiConfigured = nextCondition.type === "intent" ? (await accountAiConfig(ownerId)) !== null : true;
     const invalid = conditionConfigError({ condition: nextCondition, kind: current.kind, intent: nextIntent, aiConfigured });
     if (invalid) return v1Error(422, invalid.code, invalid.message);
+  }
+
+  if (input.callbackUrl) {
+    const allowed = await checkOutboundUrl(input.callbackUrl);
+    if (!allowed.ok) return v1Error(422, "callback_url_not_allowed", allowed.reason);
   }
 
   if (input.enabled === true && !current.enabled) {
