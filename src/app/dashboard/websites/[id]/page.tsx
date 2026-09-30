@@ -67,15 +67,7 @@ export default async function WebsiteDetailPage({
       .limit(1),
   ]);
 
-  const aiSummaryConfigured = Boolean(
-    aiSettings[0] &&
-      resolveAiSummaryConfig({
-        aiProvider: aiSettings[0].aiProvider,
-        openaiApiKey: aiSettings[0].openaiApiKey,
-        vercelAiGatewayApiKey: aiSettings[0].vercelAiGatewayApiKey,
-        aiModel: aiSettings[0].aiModel,
-      }),
-  );
+  const aiSummaryConfigured = Boolean(resolveAiSummaryConfig(aiSettings[0]));
 
   const attribution = alertAttributionText();
   const resendApiKeyManaged = isResendApiKeyManagedByEnv();

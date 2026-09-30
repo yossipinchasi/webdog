@@ -162,6 +162,7 @@ All configuration is environment variables (see `.env.example`). Everything exce
 | `POSTGRES_PORT` | No | Host port for the Docker Compose Postgres (default `5432`) |
 | `CONTEXT_DEV_API_KEY` | No | Server-managed [Context.dev](https://link.context.dev/webdog) key used for all accounts. Leave blank to let each account save its own key in Settings |
 | `SCRAPE_CRON` | No | Worker schedule, cron syntax (default `*/15 * * * *`) |
+| `SNAPSHOT_RETENTION_DAYS` | No | Delete stored snapshots older than this many days (the newest snapshot per monitored page is always kept as the diff baseline). Blank keeps all history |
 
 ### Auth (Better Auth)
 
