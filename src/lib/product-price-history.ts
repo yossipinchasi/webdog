@@ -1,4 +1,5 @@
 import type { Snapshot, Target } from "./db/schema";
+import { snapshotBelongsToTarget } from "./snapshot-ownership";
 
 export type ProductSnapshotData = {
   is_product_page: boolean;
@@ -37,9 +38,8 @@ export function formatProductPrice(price: number | null, currency: string | null
  */
 export function buildProductPriceSeries(target: Target, snapshots: Snapshot[]): ProductPricePoint[] {
   if (target.kind !== "PRODUCT_PRICE" || !target.pageUrl) return [];
-  const pageUrl = target.pageUrl;
   const rows = snapshots
-    .filter((s) => s.kind === "PRODUCT" && s.targetUrl === pageUrl)
+    .filter((s) => snapshotBelongsToTarget(s, target))
     .sort((a, b) => Number(a.createdAt) - Number(b.createdAt));
   return rows.map((s) => {
     const p = parseProductSnapshotPayload(s.payload);

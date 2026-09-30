@@ -2,8 +2,9 @@
  * Optional snapshot pruning. Every check writes a snapshot row, changed or not, so
  * the table grows without bound. When SNAPSHOT_RETENTION_DAYS is set, the worker
  * deletes snapshots older than that many days — except the newest snapshot for
- * each (website, kind, page URL), which is the diff baseline for the next check
- * and must survive no matter how old it is. Unset (the default) keeps everything.
+ * each monitor (keyed by website, kind, page URL, and monitor id), which is the diff
+ * baseline for its next check and must survive no matter how old it is. Unset (the
+ * default) keeps everything.
  *
  * Alerts do not reference snapshots (diffs are copied into alert.details), so
  * pruning never breaks an alert. It does shorten the per-monitor fetch history
@@ -30,7 +31,7 @@ export function snapshotRetentionDays(): number | null {
 
 /**
  * Delete snapshots created before `now - retentionDays` that have a newer snapshot
- * for the same (websiteId, kind, targetUrl). Deletes in batches so a large backlog
+ * for the same (websiteId, kind, targetUrl, targetId). Deletes in batches so a large backlog
  * never runs as one long statement. Returns the number of rows removed.
  */
 export async function pruneSnapshots(retentionDays: number, nowMs: number = Date.now()): Promise<number> {
@@ -46,6 +47,7 @@ export async function pruneSnapshots(retentionDays: number, nowMs: number = Date
             WHERE n."websiteId" = s."websiteId"
               AND n."kind" = s."kind"
               AND n."targetUrl" IS NOT DISTINCT FROM s."targetUrl"
+              AND n."targetId" IS NOT DISTINCT FROM s."targetId"
               AND n."createdAt" > s."createdAt"
           )
         LIMIT ${DELETE_BATCH_SIZE}

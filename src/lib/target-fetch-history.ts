@@ -1,6 +1,7 @@
 import type { Snapshot, Target } from "./db/schema";
 import { parseProductSnapshotPayload, type ProductSnapshotData } from "./product-price-history";
 import { diffPreview } from "./diff-preview";
+import { snapshotBelongsToTarget } from "./snapshot-ownership";
 
 export type { ProductSnapshotData } from "./product-price-history";
 
@@ -49,18 +50,7 @@ export type TargetCurrentContent =
   | { kind: "product"; capturedAt: number; product: ProductSnapshotData };
 
 function snapshotsForTarget(target: Target, snapshots: Snapshot[]): Snapshot[] {
-  if (target.kind === "SITEMAP_LINKS") {
-    return snapshots.filter((s) => s.kind === "SITEMAP" && s.targetUrl == null);
-  }
-  const url = target.pageUrl;
-  if (!url) return [];
-  if (target.kind === "PAGE_CONTENT") {
-    return snapshots.filter((s) => s.kind === "MARKDOWN" && s.targetUrl === url);
-  }
-  if (target.kind === "PRODUCT_PRICE") {
-    return snapshots.filter((s) => s.kind === "PRODUCT" && s.targetUrl === url);
-  }
-  return [];
+  return snapshots.filter((s) => snapshotBelongsToTarget(s, target));
 }
 
 /**

@@ -6,15 +6,9 @@ import * as schema from "@/lib/db/schema";
 import { badRequest, getApiUser, parseJson, requireApiUserWithWriteOwner } from "@/lib/api";
 import { websiteOwnerAccessible } from "@/lib/account-access";
 import { newId } from "@/lib/ids";
-import {
-  ContextDevError,
-  normalizeDomain,
-  pickBrandAssets,
-  retrieveBrand,
-  scrapeScreenshot,
-} from "@/lib/context-client";
-import { effectiveContextDevApiKey } from "@/lib/server-managed-config";
+import { normalizeDomain } from "@/lib/context-client";
 import { monitorLimitError } from "@/lib/account-monitor-limits";
+import { createWebsiteWithBrand } from "@/lib/website-create";
 import { buildInitialPageUrl } from "@/lib/website-url-input";
 
 export async function GET() {
@@ -59,58 +53,7 @@ export async function POST(req: Request) {
   const domain = normalizeDomain(parsed.data.domain);
   if (!domain) return badRequest("Enter a valid domain like example.com");
 
-  const [settings] = await db
-    .select({ contextDevApiKey: schema.userNotificationSettings.contextDevApiKey })
-    .from(schema.userNotificationSettings)
-    .where(eq(schema.userNotificationSettings.userId, ownerId))
-    .limit(1);
-  const contextKey = effectiveContextDevApiKey(settings?.contextDevApiKey);
-  const hasContextKey = Boolean(contextKey);
-
-  let assets = pickBrandAssets(null);
-  let heroScreenshotUrl: string | null = null;
-
-  await Promise.all([
-    (async () => {
-      if (!hasContextKey) return;
-      try {
-        const brand = await retrieveBrand(domain, { apiKey: contextKey });
-        assets = pickBrandAssets(brand);
-      } catch (err) {
-        if (err instanceof ContextDevError && err.status !== 404) {
-          console.warn(`retrieveBrand(${domain}) failed:`, err.message);
-        }
-      }
-    })(),
-    (async () => {
-      if (!hasContextKey) return;
-      try {
-        const shot = await scrapeScreenshot({ domain, apiKey: contextKey, prioritize: "quality" });
-        if (shot.screenshot) heroScreenshotUrl = shot.screenshot;
-      } catch (err) {
-        if (err instanceof ContextDevError) {
-          console.warn(`scrapeScreenshot(${domain}) failed:`, err.message);
-        } else {
-          throw err;
-        }
-      }
-    })(),
-  ]);
-
-  const id = newId("web");
-  await db.insert(schema.website).values({
-    id,
-    userId: ownerId,
-    name: assets.title ?? domain,
-    url: `https://${domain}`,
-    domain,
-    title: assets.title,
-    description: assets.description,
-    logoUrl: assets.logoUrl,
-    heroScreenshotUrl,
-    backdropUrl: assets.backdropUrl,
-    createdAt: new Date(),
-  });
+  const id = await createWebsiteWithBrand(ownerId, domain);
 
   const initialPagePath = parsed.data.initialPagePath?.trim();
   if (initialPagePath && initialPagePath !== "/") {

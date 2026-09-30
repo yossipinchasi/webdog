@@ -7,7 +7,9 @@ import {
   primaryKey,
   text,
   timestamp,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 /* ------------------------------------------------------------------ */
 /* BetterAuth core tables — field names follow the BetterAuth defaults. */
@@ -119,6 +121,34 @@ export const notificationDestination = pgTable(
   }),
 );
 
+/**
+ * Machine credentials for the `/api/v1` Watcher API. A client acts as its owner account.
+ * Only a sha256 of the key is stored; the key itself is shown once, at creation.
+ */
+export const apiClient = pgTable(
+  "apiClient",
+  {
+    id: text("id").primaryKey(),
+    ownerUserId: text("ownerUserId")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    /** Leading characters of the key (not secret) so operators can tell keys apart. */
+    keyPrefix: text("keyPrefix").notNull(),
+    /** sha256 hex of the full key. */
+    keyHash: text("keyHash").notNull().unique(),
+    createdAt: timestamp("createdAt", { withTimezone: true, precision: 3 })
+      .notNull()
+      .defaultNow(),
+    lastUsedAt: timestamp("lastUsedAt", { withTimezone: true, precision: 3 }),
+    /** Set when the key is revoked; revoked keys never authenticate. */
+    revokedAt: timestamp("revokedAt", { withTimezone: true, precision: 3 }),
+  },
+  (t) => ({
+    byOwner: index("api_client_owner_idx").on(t.ownerUserId),
+  }),
+);
+
 /* ------------------------------------------------------------------ */
 /* Domain tables                                                      */
 /* ------------------------------------------------------------------ */
@@ -207,18 +237,30 @@ export const target = pgTable(
      * any triage error surfaces the alert normally.
      */
     aiTriageEnabled: boolean("aiTriageEnabled").notNull().default(false),
+    /** API client that created this monitor through `/api/v1`; null for dashboard monitors. */
+    apiClientId: text("apiClientId").references(() => apiClient.id, { onDelete: "set null" }),
+    /** Caller's id for the end user this watch belongs to (opaque to Webdog). */
+    externalUserId: text("externalUserId"),
+    /** Caller's own id for this watch; unique per API client, so create retries are idempotent. */
+    externalRef: text("externalRef"),
+    /** Caller-supplied JSON object string, returned verbatim. */
+    metadata: text("metadata"),
     createdAt: timestamp("createdAt", { withTimezone: true, precision: 3 })
       .notNull()
       .defaultNow(),
   },
   (t) => ({
     byWebsite: index("target_website_idx").on(t.websiteId),
+    byExternalUser: index("target_external_user_idx").on(t.externalUserId),
+    byClientExternalRef: uniqueIndex("target_api_client_external_ref_idx")
+      .on(t.apiClientId, t.externalRef)
+      .where(sql`"externalRef" IS NOT NULL`),
   }),
 );
 
 /**
  * Snapshots store the raw scrape result at a point in time. The worker
- * compares the latest snapshot against the previous one to generate alerts.
+ * compares each monitor's latest snapshot against a fresh scrape to generate alerts.
  *
  *  - kind=SITEMAP         payload = JSON string array of URLs
  *  - kind=MARKDOWN        payload = markdown body; targetUrl set
@@ -231,6 +273,12 @@ export const snapshot = pgTable(
     websiteId: text("websiteId")
       .notNull()
       .references(() => website.id, { onDelete: "cascade" }),
+    /**
+     * Monitor whose diff baseline this is. Each monitor diffs only against its own
+     * snapshots, so several monitors on one URL never consume each other's changes.
+     * Null for rows orphaned by a deleted monitor.
+     */
+    targetId: text("targetId").references(() => target.id, { onDelete: "set null" }),
     kind: text("kind", { enum: ["SITEMAP", "MARKDOWN", "PRODUCT"] }).notNull(),
     /** For MARKDOWN / PRODUCT: the URL. Null for SITEMAP. */
     targetUrl: text("targetUrl"),
@@ -243,6 +291,7 @@ export const snapshot = pgTable(
   },
   (t) => ({
     byLookup: index("snapshot_lookup_idx").on(t.websiteId, t.kind, t.targetUrl, t.createdAt),
+    byTarget: index("snapshot_target_idx").on(t.targetId, t.createdAt),
   }),
 );
 
@@ -331,6 +380,7 @@ export const accountInvite = pgTable(
 );
 
 export type User = typeof user.$inferSelect;
+export type ApiClient = typeof apiClient.$inferSelect;
 export type UserNotificationSettings = typeof userNotificationSettings.$inferSelect;
 export type NotificationDestination = typeof notificationDestination.$inferSelect;
 export type NotificationChannel = NotificationDestination["channel"];
