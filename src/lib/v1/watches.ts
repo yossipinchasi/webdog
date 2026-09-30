@@ -7,7 +7,6 @@ import { and, desc, eq, sql, type SQL } from "drizzle-orm";
 import { db } from "../db";
 import * as schema from "../db/schema";
 import type { TargetKind } from "../db/schema";
-import { newId } from "../ids";
 import { parseProductSnapshotPayload } from "../product-price-history";
 import { createWebsiteWithBrand } from "../website-create";
 import { resolveAiSummaryConfig, type AiSummaryConfig } from "../ai-change-summary";
@@ -16,25 +15,15 @@ import { toWatchJson, type WatchJson } from "./watch-format";
 const watchColumns = {
   target: schema.target,
   website: { id: schema.website.id, url: schema.website.url },
-  destinationChannel: schema.notificationDestination.channel,
-  destinationWebhookUrl: schema.notificationDestination.alertWebhookUrl,
 };
 
 type WatchRow = {
   target: typeof schema.target.$inferSelect;
   website: { id: string; url: string };
-  destinationChannel: string | null;
-  destinationWebhookUrl: string | null;
 };
 
-/** The webhook a watch reports to — only when it routes externally to a WEBHOOK destination. */
-function callbackUrlOf(row: WatchRow): string | null {
-  if (!row.target.externalNotify || row.destinationChannel !== "WEBHOOK") return null;
-  return row.destinationWebhookUrl;
-}
-
 export function rowToWatchJson(row: WatchRow): WatchJson {
-  return toWatchJson(row.target, row.website, callbackUrlOf(row));
+  return toWatchJson(row.target, row.website, row.target.callbackUrl);
 }
 
 /** Watches owned by `ownerId` matching `where`, newest first. */
@@ -43,10 +32,6 @@ export async function selectWatches(ownerId: string, where: SQL | undefined, lim
     .select(watchColumns)
     .from(schema.target)
     .innerJoin(schema.website, eq(schema.website.id, schema.target.websiteId))
-    .leftJoin(
-      schema.notificationDestination,
-      eq(schema.notificationDestination.id, schema.target.notificationDestinationId),
-    )
     .where(and(eq(schema.website.userId, ownerId), where))
     .orderBy(desc(schema.target.createdAt), desc(schema.target.id))
     .limit(limit);
@@ -80,38 +65,6 @@ export async function findOrCreateWebsite(ownerId: string, domain: string): Prom
     .limit(1);
   if (existing) return { id: existing.id, created: false };
   return { id: await createWebsiteWithBrand(ownerId, domain), created: true };
-}
-
-/** Reuse the account's WEBHOOK destination for `url`, or create one. Returns its id. */
-export async function findOrCreateWebhookDestination(ownerId: string, url: string): Promise<string> {
-  const [existing] = await db
-    .select({ id: schema.notificationDestination.id })
-    .from(schema.notificationDestination)
-    .where(
-      and(
-        eq(schema.notificationDestination.userId, ownerId),
-        eq(schema.notificationDestination.channel, "WEBHOOK"),
-        eq(schema.notificationDestination.alertWebhookUrl, url),
-      ),
-    )
-    .limit(1);
-  if (existing) return existing.id;
-
-  const id = newId("ndst");
-  const now = new Date();
-  await db.insert(schema.notificationDestination).values({
-    id,
-    userId: ownerId,
-    channel: "WEBHOOK",
-    name: `API webhook (${new URL(url).host})`,
-    slackWebhookUrl: null,
-    resendFromEmail: null,
-    resendToEmails: null,
-    alertWebhookUrl: url,
-    createdAt: now,
-    updatedAt: now,
-  });
-  return id;
 }
 
 /**

@@ -43,6 +43,13 @@
       "when": 1790790043369,
       "tag": "0005_watch_conditions",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1790793426191,
+      "tag": "0006_signed_webhooks",
+      "breakpoints": true
     }
   ]
 }

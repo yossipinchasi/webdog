@@ -21,7 +21,6 @@ import {
   accountAiConfig,
   baselineFailure,
   discardWatch,
-  findOrCreateWebhookDestination,
   findOrCreateWebsite,
   findWatchByExternalRef,
   latestSnapshotPayload,
@@ -68,7 +67,7 @@ export async function GET(req: Request) {
 
 /**
  * Create a watch. The website is found or created from the URL's domain, `callbackUrl`
- * becomes the watch's webhook destination, and (unless `baseline: false`) the first
+ * receives the watch's signed events, and (unless `baseline: false`) the first
  * check runs before responding so an unreachable page or a non-product page is
  * rejected here rather than failing silently later. With a condition, the response
  * also says whether the page already satisfies it (e.g. the price is already below
@@ -112,7 +111,6 @@ export async function POST(req: Request) {
   if (limitError) return v1Error(403, "monitor_limit_reached", limitError);
 
   const website = await findOrCreateWebsite(ownerId, domain);
-  const destinationId = input.callbackUrl ? await findOrCreateWebhookDestination(ownerId, input.callbackUrl) : null;
   const targetId = newId("tgt");
 
   try {
@@ -125,8 +123,10 @@ export async function POST(req: Request) {
       watchNote: input.intent || null,
       enabled: true,
       checkIntervalHours: minutesToHours(input.intervalMinutes),
-      externalNotify: destinationId !== null,
-      notificationDestinationId: destinationId,
+      // Watch events go to callbackUrl through the signed webhook outbox, not a notification destination.
+      externalNotify: false,
+      notificationDestinationId: null,
+      callbackUrl: input.callbackUrl ?? null,
       aiChangeSummaryEnabled: input.aiSummaryEnabled,
       aiTriageEnabled: input.aiTriageEnabled,
       apiClientId: client.id,

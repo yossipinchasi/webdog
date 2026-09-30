@@ -6,7 +6,7 @@ import { monitorLimitError } from "@/lib/account-monitor-limits";
 import { computeNextCheckDueAfterSuccess } from "@/lib/scraper";
 import { authenticateApiClient, isUniqueViolation, parseV1Json, v1Error } from "@/lib/v1/http";
 import { minutesToHours, updateWatchSchema } from "@/lib/v1/watch-format";
-import { accountAiConfig, findOrCreateWebhookDestination, loadWatch, rowToWatchJson } from "@/lib/v1/watches";
+import { accountAiConfig, loadWatch, rowToWatchJson } from "@/lib/v1/watches";
 import { conditionConfigError, parseStoredCondition } from "@/lib/watch-conditions";
 
 type Params = { params: Promise<{ id: string }> };
@@ -63,15 +63,7 @@ export async function PATCH(req: Request, { params }: Params) {
     updates.nextCheckDueAt =
       current.lastCheckedAt != null ? computeNextCheckDueAfterSuccess(current.lastCheckedAt, hours, Date.now()) : null;
   }
-  if (input.callbackUrl !== undefined) {
-    if (input.callbackUrl === null) {
-      updates.externalNotify = false;
-      updates.notificationDestinationId = null;
-    } else {
-      updates.externalNotify = true;
-      updates.notificationDestinationId = await findOrCreateWebhookDestination(ownerId, input.callbackUrl);
-    }
-  }
+  if (input.callbackUrl !== undefined) updates.callbackUrl = input.callbackUrl;
   if (input.externalUserId !== undefined) updates.externalUserId = input.externalUserId;
   if (input.externalRef !== undefined) updates.externalRef = input.externalRef;
   if (input.metadata !== undefined) updates.metadata = input.metadata ? JSON.stringify(input.metadata) : null;

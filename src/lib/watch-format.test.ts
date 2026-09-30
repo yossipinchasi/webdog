@@ -8,6 +8,7 @@ import {
   listWatchesQuerySchema,
   toWatchEventJson,
   toWatchJson,
+  toWebhookDeliveryJson,
   updateWatchSchema,
   watchStatus,
 } from "./v1/watch-format";
@@ -41,6 +42,9 @@ function target(overrides: Partial<Target> = {}): Target {
     condition: null,
     triggerMode: "every",
     triggeredAt: null,
+    callbackUrl: "https://platform.test/hook",
+    consecutiveFailures: 0,
+    failingSince: null,
     createdAt: new Date("2025-12-31T00:00:00Z"),
     ...overrides,
   };
@@ -231,4 +235,27 @@ test("create/update schemas accept conditions and trigger modes", () => {
   assert.deepEqual([c.condition, c.triggerMode], [{ type: "intent" }, "once"]);
   assert.equal(createWatchSchema.parse({ url: "https://x.test" }).triggerMode, "every");
   assert.deepEqual(updateWatchSchema.parse({ condition: null }), { condition: null });
+});
+
+test("delivery JSON: next attempt only while pending", () => {
+  const base = {
+    id: "whd_1",
+    eventId: "evt_1",
+    eventType: "watch.triggered" as const,
+    targetId: "tgt_1",
+    apiClientId: "akey_1",
+    url: "https://platform.test/hook",
+    payload: "{}",
+    attempts: 2,
+    nextAttemptAt: new Date("2026-10-01T00:02:00Z"),
+    lastAttemptAt: new Date("2026-10-01T00:00:30Z"),
+    lastStatusCode: 503,
+    lastError: "HTTP 503",
+    deliveredAt: null,
+    createdAt: new Date("2026-10-01T00:00:00Z"),
+  };
+  assert.equal(toWebhookDeliveryJson({ ...base, status: "pending" }).nextAttemptAt, "2026-10-01T00:02:00.000Z");
+  const done = toWebhookDeliveryJson({ ...base, status: "delivered", deliveredAt: new Date("2026-10-01T00:02:01Z") });
+  assert.deepEqual([done.nextAttemptAt, done.deliveredAt], [null, "2026-10-01T00:02:01.000Z"]);
+  assert.ok(!("payload" in done), "payload not echoed back");
 });

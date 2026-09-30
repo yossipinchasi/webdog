@@ -5,7 +5,7 @@
  */
 
 import { z } from "zod";
-import type { Alert, AlertKind, Target, TargetKind, Website } from "../db/schema";
+import type { Alert, AlertKind, Target, TargetKind, WebhookDelivery, Website } from "../db/schema";
 import { isValidAlertWebhookUrl } from "../notify-outbound-webhook";
 import { conditionSchema, parseStoredCondition, type ConditionStatus, type WatchCondition } from "../watch-conditions";
 
@@ -280,3 +280,46 @@ export function decodeCursor(cursor: string): { createdAt: Date; id: string } | 
     return null;
   }
 }
+
+export type WebhookDeliveryJson = {
+  id: string;
+  eventId: string;
+  eventType: string;
+  url: string;
+  status: "pending" | "delivered" | "failed";
+  attempts: number;
+  lastStatusCode: number | null;
+  lastError: string | null;
+  /** When the next attempt is due; null once delivered or failed. */
+  nextAttemptAt: string | null;
+  lastAttemptAt: string | null;
+  deliveredAt: string | null;
+  createdAt: string;
+};
+
+export function toWebhookDeliveryJson(d: WebhookDelivery): WebhookDeliveryJson {
+  return {
+    id: d.id,
+    eventId: d.eventId,
+    eventType: d.eventType,
+    url: d.url,
+    status: d.status,
+    attempts: d.attempts,
+    lastStatusCode: d.lastStatusCode,
+    lastError: d.lastError,
+    nextAttemptAt: d.status === "pending" ? iso(d.nextAttemptAt) : null,
+    lastAttemptAt: iso(d.lastAttemptAt),
+    deliveredAt: iso(d.deliveredAt),
+    createdAt: iso(d.createdAt)!,
+  };
+}
+
+export const listDeliveriesQuerySchema = z
+  .object({
+    status: z.enum(["pending", "delivered", "failed"]).optional(),
+    limit,
+    cursor: z.string().optional(),
+  })
+  .strict();
+
+export const testWebhookSchema = z.object({ url: httpUrl }).strict();
