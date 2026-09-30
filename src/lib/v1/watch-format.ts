@@ -7,6 +7,7 @@
 import { z } from "zod";
 import type { Alert, AlertKind, Target, TargetKind, Website } from "../db/schema";
 import { isValidAlertWebhookUrl } from "../notify-outbound-webhook";
+import { conditionSchema, parseStoredCondition, type ConditionStatus, type WatchCondition } from "../watch-conditions";
 
 export type WatchType = "page" | "price" | "links";
 
@@ -56,6 +57,10 @@ export const createWatchSchema = z
     metadata: metadata.optional(),
     aiTriageEnabled: z.boolean().default(false),
     aiSummaryEnabled: z.boolean().default(false),
+    /** Only notify for changes that satisfy this; omit to notify on every change. */
+    condition: conditionSchema.optional(),
+    /** `once` stops the watch after its first matched notification. */
+    triggerMode: z.enum(["every", "once"]).default("every"),
     /** Run the first check synchronously so a bad URL is rejected at creation time. */
     baseline: z.boolean().default(true),
   })
@@ -73,6 +78,8 @@ export const updateWatchSchema = z
     metadata: metadata.nullable().optional(),
     aiTriageEnabled: z.boolean().optional(),
     aiSummaryEnabled: z.boolean().optional(),
+    condition: conditionSchema.nullable().optional(),
+    triggerMode: z.enum(["every", "once"]).optional(),
   })
   .strict()
   .refine((d) => Object.values(d).some((v) => v !== undefined), "At least one field to update is required");
@@ -107,10 +114,10 @@ export function hoursToMinutes(hours: number): number {
   return Math.round(hours * 60);
 }
 
-export type WatchStatus = "paused" | "pending" | "error" | "active";
+export type WatchStatus = "triggered" | "paused" | "pending" | "error" | "active";
 
-export function watchStatus(t: Pick<Target, "enabled" | "lastError" | "lastCheckedAt">): WatchStatus {
-  if (!t.enabled) return "paused";
+export function watchStatus(t: Pick<Target, "enabled" | "lastError" | "lastCheckedAt" | "triggeredAt">): WatchStatus {
+  if (!t.enabled) return t.triggeredAt ? "triggered" : "paused";
   if (t.lastError) return "error";
   if (!t.lastCheckedAt) return "pending";
   return "active";
@@ -128,6 +135,16 @@ function parseJsonObject(raw: string | null): Record<string, unknown> | null {
 
 const iso = (d: Date | null | undefined) => (d ? new Date(d).toISOString() : null);
 
+function parseStringArray(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const v = JSON.parse(raw) as unknown;
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 export type WatchJson = {
   id: string;
   type: WatchType;
@@ -142,6 +159,10 @@ export type WatchJson = {
   metadata: Record<string, unknown> | null;
   aiTriageEnabled: boolean;
   aiSummaryEnabled: boolean;
+  condition: WatchCondition | null;
+  triggerMode: "every" | "once";
+  /** When a `once` watch fired and stopped. */
+  triggeredAt: string | null;
   websiteId: string;
   lastCheckedAt: string | null;
   nextCheckAt: string | null;
@@ -165,6 +186,9 @@ export function toWatchJson(t: Target, website: Pick<Website, "id" | "url">, cal
     metadata: parseJsonObject(t.metadata),
     aiTriageEnabled: t.aiTriageEnabled,
     aiSummaryEnabled: t.aiChangeSummaryEnabled,
+    condition: parseStoredCondition(t.condition),
+    triggerMode: t.triggerMode,
+    triggeredAt: iso(t.triggeredAt),
     websiteId: website.id,
     lastCheckedAt: iso(t.lastCheckedAt),
     // Null next-check = due on the next worker tick.
@@ -191,9 +215,11 @@ export type WatchEventJson = {
   title: string;
   /** AI plain-language summary, when summaries ran for this change. */
   summary: string | null;
-  /** True when the AI relevance filter held this change back from notifying. */
+  /** True when this change was held back from notifying (condition not met, or the AI relevance filter). */
   suppressed: boolean;
   suppressionReason: string | null;
+  /** How the watch's condition judged this change; null when the watch has no condition. */
+  condition: { status: ConditionStatus; reason: string | null; evidence: string[] } | null;
   change: Record<string, unknown>;
   createdAt: string;
 };
@@ -230,6 +256,9 @@ export function toWatchEventJson(a: Alert): WatchEventJson {
     summary: typeof d.aiChangeSummary === "string" ? d.aiChangeSummary : null,
     suppressed: a.suppressed,
     suppressionReason: a.suppressionReason,
+    condition: a.conditionStatus
+      ? { status: a.conditionStatus, reason: a.conditionReason, evidence: parseStringArray(a.conditionEvidence) }
+      : null,
     change,
     createdAt: iso(a.createdAt)!,
   };

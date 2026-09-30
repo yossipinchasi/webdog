@@ -30,6 +30,8 @@ import {
 } from "./ai-change-summary";
 import { triageAlert } from "./ai-alert-triage";
 import { withWebsiteCheckLock } from "./website-check-lock";
+import { parseStoredCondition, type ConditionOutcome } from "./watch-conditions";
+import { evaluateChangeCondition } from "./watch-condition-eval";
 
 function sha256(s: string): string {
   return createHash("sha256").update(s).digest("hex");
@@ -158,6 +160,8 @@ interface AlertInsert {
   suppressed?: boolean;
   /** Short rationale for suppression; null unless suppressed. */
   suppressionReason?: string | null;
+  /** Outcome of the monitor's condition; unset when it has none. */
+  condition?: ConditionOutcome;
 }
 
 function linkScopeEmits(scope: string | null | undefined, variant: "new" | "removed"): boolean {
@@ -514,15 +518,39 @@ async function runWebsiteChecksLocked(
       .where(inArray(schema.target.id, targetIdList));
     const targetById = new Map(targetRows.map((t) => [t.id, t]));
 
+    // Watch conditions: a monitor with a condition notifies only for changes that
+    // satisfy it. `not_matched` is held like a filtered alert; `error` (could not
+    // evaluate) is delivered, flagged, so an outage never hides a real match.
+    for (const a of alerts) {
+      const tgt = targetById.get(a.targetId);
+      const condition = parseStoredCondition(tgt?.condition);
+      if (!tgt || !condition) continue;
+      a.condition = await evaluateChangeCondition({
+        condition,
+        intent: tgt.watchNote,
+        website,
+        aiConfig,
+        alertKind: a.kind,
+        title: a.title,
+        detailsJson: a.details,
+        detailsForSummary: a.summaryDetails,
+      });
+      if (a.condition.status === "not_matched") {
+        a.suppressed = true;
+        a.suppressionReason = a.condition.reason;
+      }
+    }
+
     // AI relevance filter: score each change against the monitor's watch note and
     // hold the ones judged to be noise. Runs before summarization so a held alert
     // never costs a summary call. Fails open — triageAlert returns suppress:false
     // on any misconfig, timeout, or malformed model output, so a real change is
-    // never silently withheld.
+    // never silently withheld. Monitors with a condition skip it: the condition is
+    // the more specific test.
     if (aiConfig) {
       for (const a of alerts) {
         const tgt = targetById.get(a.targetId);
-        if (!tgt?.aiTriageEnabled) continue;
+        if (!tgt?.aiTriageEnabled || a.condition) continue;
         const decision = await triageAlert({
           config: aiConfig,
           website,
@@ -575,6 +603,9 @@ async function runWebsiteChecksLocked(
         read: Boolean(a.suppressed),
         suppressed: Boolean(a.suppressed),
         suppressionReason: a.suppressed ? (a.suppressionReason ?? null) : null,
+        conditionStatus: a.condition?.status ?? null,
+        conditionReason: a.condition?.reason ?? null,
+        conditionEvidence: a.condition ? JSON.stringify(a.condition.evidence) : null,
         createdAt: a.createdAt,
       })),
     );
@@ -607,6 +638,7 @@ async function runWebsiteChecksLocked(
         totalAdded: parsedDetails.totalAdded,
         totalRemoved: parsedDetails.totalRemoved,
         aiChangeSummary: parsedDetails.aiChangeSummary,
+        ...(a.condition ? { condition: a.condition } : {}),
       };
       for (const d of dests) {
         const list = alertsByDestinationId.get(d.id) ?? [];
@@ -632,6 +664,19 @@ async function runWebsiteChecksLocked(
         userSettings?.resendApiKey,
         payload,
       );
+    }
+
+    // `once` monitors stop after their first confirmed notification. An `error`
+    // outcome was delivered unverified, so it does not use up the trigger.
+    const firedTargetIds = new Set(
+      alerts.filter((a) => !a.suppressed && a.condition?.status !== "error").map((a) => a.targetId),
+    );
+    for (const id of firedTargetIds) {
+      if (targetById.get(id)?.triggerMode !== "once") continue;
+      await db
+        .update(schema.target)
+        .set({ enabled: false, triggeredAt: new Date() })
+        .where(eq(schema.target.id, id));
     }
   }
 

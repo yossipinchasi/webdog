@@ -10,6 +10,7 @@ import type { TargetKind } from "../db/schema";
 import { newId } from "../ids";
 import { parseProductSnapshotPayload } from "../product-price-history";
 import { createWebsiteWithBrand } from "../website-create";
+import { resolveAiSummaryConfig, type AiSummaryConfig } from "../ai-change-summary";
 import { toWatchJson, type WatchJson } from "./watch-format";
 
 const watchColumns = {
@@ -129,13 +130,8 @@ export async function baselineFailure(
   if (t?.lastError) return { code: "baseline_failed", message: t.lastError };
   if (kind !== "PRODUCT_PRICE") return null;
 
-  const [snap] = await db
-    .select({ payload: schema.snapshot.payload })
-    .from(schema.snapshot)
-    .where(eq(schema.snapshot.targetId, targetId))
-    .orderBy(desc(schema.snapshot.createdAt))
-    .limit(1);
-  const product = snap ? parseProductSnapshotPayload(snap.payload) : null;
+  const payload = await latestSnapshotPayload(targetId);
+  const product = payload ? parseProductSnapshotPayload(payload) : null;
   if (!product?.is_product_page) {
     return { code: "not_a_product_page", message: "No product was found on that page, so there is no price to watch." };
   }
@@ -152,4 +148,30 @@ export async function discardWatch(targetId: string, website: { id: string; crea
     .from(schema.target)
     .where(eq(schema.target.websiteId, website.id));
   if (n === 0) await db.delete(schema.website).where(eq(schema.website.id, website.id));
+}
+
+/** The account's effective AI config (server-managed keys or its own), or null. */
+export async function accountAiConfig(ownerId: string): Promise<AiSummaryConfig | null> {
+  const [row] = await db
+    .select({
+      aiProvider: schema.userNotificationSettings.aiProvider,
+      openaiApiKey: schema.userNotificationSettings.openaiApiKey,
+      vercelAiGatewayApiKey: schema.userNotificationSettings.vercelAiGatewayApiKey,
+      aiModel: schema.userNotificationSettings.aiModel,
+    })
+    .from(schema.userNotificationSettings)
+    .where(eq(schema.userNotificationSettings.userId, ownerId))
+    .limit(1);
+  return resolveAiSummaryConfig(row);
+}
+
+/** The payload of a watch's most recent snapshot, or null before its first check. */
+export async function latestSnapshotPayload(targetId: string): Promise<string | null> {
+  const [snap] = await db
+    .select({ payload: schema.snapshot.payload })
+    .from(schema.snapshot)
+    .where(eq(schema.snapshot.targetId, targetId))
+    .orderBy(desc(schema.snapshot.createdAt))
+    .limit(1);
+  return snap?.payload ?? null;
 }

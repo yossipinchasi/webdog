@@ -245,6 +245,16 @@ export const target = pgTable(
     externalRef: text("externalRef"),
     /** Caller-supplied JSON object string, returned verbatim. */
     metadata: text("metadata"),
+    /**
+     * Optional JSON condition a detected change must satisfy before it notifies
+     * (see `watch-conditions.ts`): `intent` (AI match against `watchNote`) or a
+     * deterministic `price_below` / `price_above`. Null = every change notifies.
+     */
+    condition: text("condition"),
+    /** `once`: disable the monitor after its first matched notification. */
+    triggerMode: text("triggerMode", { enum: ["every", "once"] }).notNull().default("every"),
+    /** When a `once` monitor fired and was disabled; cleared when it is re-enabled. */
+    triggeredAt: timestamp("triggeredAt", { withTimezone: true, precision: 3 }),
     createdAt: timestamp("createdAt", { withTimezone: true, precision: 3 })
       .notNull()
       .defaultNow(),
@@ -317,6 +327,15 @@ export const alert = pgTable(
     suppressed: boolean("suppressed").notNull().default(false),
     /** Short LLM rationale for why the change was held; null unless suppressed. */
     suppressionReason: text("suppressionReason"),
+    /**
+     * Outcome of the monitor's condition for this change; null when it has none.
+     * `not_matched` alerts are also suppressed. `error` = could not evaluate (delivered anyway).
+     */
+    conditionStatus: text("conditionStatus", { enum: ["matched", "not_matched", "error"] }),
+    /** Short explanation of the condition outcome. */
+    conditionReason: text("conditionReason"),
+    /** JSON string array of verbatim snippets from the change that support a match. */
+    conditionEvidence: text("conditionEvidence"),
     createdAt: timestamp("createdAt", { withTimezone: true, precision: 3 })
       .notNull()
       .defaultNow(),
