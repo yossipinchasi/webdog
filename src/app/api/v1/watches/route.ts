@@ -15,12 +15,16 @@ import {
   minutesToHours,
   TARGET_KIND_BY_WATCH_TYPE,
 } from "@/lib/v1/watch-format";
+import { conditionConfigError, type ConditionOutcome } from "@/lib/watch-conditions";
+import { evaluateSnapshotCondition } from "@/lib/watch-condition-eval";
 import {
+  accountAiConfig,
   baselineFailure,
   discardWatch,
   findOrCreateWebhookDestination,
   findOrCreateWebsite,
   findWatchByExternalRef,
+  latestSnapshotPayload,
   loadWatch,
   rowToWatchJson,
   selectWatches,
@@ -66,7 +70,9 @@ export async function GET(req: Request) {
  * Create a watch. The website is found or created from the URL's domain, `callbackUrl`
  * becomes the watch's webhook destination, and (unless `baseline: false`) the first
  * check runs before responding so an unreachable page or a non-product page is
- * rejected here rather than failing silently later.
+ * rejected here rather than failing silently later. With a condition, the response
+ * also says whether the page already satisfies it (e.g. the price is already below
+ * the threshold), since a crossing-based condition would otherwise never fire.
  */
 export async function POST(req: Request) {
   const auth = await authenticateApiClient(req);
@@ -81,7 +87,7 @@ export async function POST(req: Request) {
   const replay = async () => {
     const existing = input.externalRef ? await findWatchByExternalRef(ownerId, client.id, input.externalRef) : null;
     return existing
-      ? NextResponse.json({ watch: rowToWatchJson(existing), baseline: { status: "not_requested" }, replayed: true })
+      ? NextResponse.json({ watch: rowToWatchJson(existing), baseline: { status: "not_requested", condition: null }, replayed: true })
       : null;
   };
   const replayed = await replay();
@@ -90,12 +96,23 @@ export async function POST(req: Request) {
   const domain = normalizeDomain(input.url);
   if (!domain) return v1Error(422, "invalid_url", "The URL must have a valid public hostname.");
 
+  const kind = TARGET_KIND_BY_WATCH_TYPE[input.type];
+  const aiConfig = input.condition?.type === "intent" ? await accountAiConfig(ownerId) : null;
+  if (input.condition) {
+    const invalid = conditionConfigError({
+      condition: input.condition,
+      kind,
+      intent: input.intent,
+      aiConfigured: aiConfig !== null,
+    });
+    if (invalid) return v1Error(422, invalid.code, invalid.message);
+  }
+
   const limitError = await monitorLimitError(ownerId);
   if (limitError) return v1Error(403, "monitor_limit_reached", limitError);
 
   const website = await findOrCreateWebsite(ownerId, domain);
   const destinationId = input.callbackUrl ? await findOrCreateWebhookDestination(ownerId, input.callbackUrl) : null;
-  const kind = TARGET_KIND_BY_WATCH_TYPE[input.type];
   const targetId = newId("tgt");
 
   try {
@@ -116,6 +133,8 @@ export async function POST(req: Request) {
       externalUserId: input.externalUserId ?? null,
       externalRef: input.externalRef ?? null,
       metadata: input.metadata ? JSON.stringify(input.metadata) : null,
+      condition: input.condition ? JSON.stringify(input.condition) : null,
+      triggerMode: input.triggerMode,
       createdAt: new Date(),
     });
   } catch (err) {
@@ -128,6 +147,7 @@ export async function POST(req: Request) {
   }
 
   let baseline: "completed" | "pending" | "not_requested" = "not_requested";
+  let baselineCondition: ConditionOutcome | null = null;
   if (input.baseline) {
     const result = await runWebsiteChecks(website.id, { targetId });
     if (result.skipped) {
@@ -140,9 +160,24 @@ export async function POST(req: Request) {
         return v1Error(422, failure.code, failure.message);
       }
       baseline = "completed";
+      const payload = input.condition ? await latestSnapshotPayload(targetId) : null;
+      if (input.condition && payload !== null) {
+        const [site] = await db.select().from(schema.website).where(eq(schema.website.id, website.id)).limit(1);
+        baselineCondition = await evaluateSnapshotCondition({
+          condition: input.condition,
+          kind,
+          intent: input.intent ?? null,
+          website: site!,
+          aiConfig,
+          snapshotPayload: payload,
+        });
+      }
     }
   }
 
   const row = await loadWatch(ownerId, targetId);
-  return NextResponse.json({ watch: row && rowToWatchJson(row), baseline: { status: baseline } }, { status: 201 });
+  return NextResponse.json(
+    { watch: row && rowToWatchJson(row), baseline: { status: baseline, condition: baselineCondition } },
+    { status: 201 },
+  );
 }

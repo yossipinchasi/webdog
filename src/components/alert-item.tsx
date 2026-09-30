@@ -58,6 +58,8 @@ export function AlertItem({
   const [busy, setBusy] = useState(false);
   const [read, setRead] = useState(alert.read);
   const ref = useRef<HTMLElement>(null);
+  const heldBy =
+    alert.conditionStatus === "not_matched" ? "Held: this watch's condition was not met" : "Held by the AI relevance filter";
 
   useEffect(() => {
     setRead(alert.read);
@@ -148,7 +150,7 @@ export function AlertItem({
         {alert.suppressed && (
           <span
             className="hidden shrink-0 items-center rounded-full bg-neutral-100 px-2 py-0.5 text-[0.625rem] font-semibold tracking-wide text-neutral-500 uppercase ring-1 ring-neutral-950/5 ring-inset sm:inline-flex"
-            title={alert.suppressionReason?.trim() || "Held by the AI relevance filter"}
+            title={alert.suppressionReason?.trim() || heldBy}
           >
             Held
           </span>
@@ -183,7 +185,7 @@ export function AlertItem({
         <div className={`border-t border-neutral-950/[0.05] pb-4 pt-3 ${rowPx}`}>
           {alert.suppressed && (
             <div className="mb-3 rounded-xl bg-neutral-50 px-3.5 py-3 text-xs leading-relaxed text-neutral-600 ring-1 ring-neutral-950/5">
-              <span className="font-semibold text-neutral-700">Held by the AI relevance filter.</span>{" "}
+              <span className="font-semibold text-neutral-700">{heldBy}.</span>{" "}
               {alert.suppressionReason?.trim()
                 ? `${alert.suppressionReason.trim().replace(/[.!?]+$/, "")}. `
                 : "Judged not to match this monitor's note. "}

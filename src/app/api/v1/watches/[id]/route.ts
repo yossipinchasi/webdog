@@ -6,7 +6,8 @@ import { monitorLimitError } from "@/lib/account-monitor-limits";
 import { computeNextCheckDueAfterSuccess } from "@/lib/scraper";
 import { authenticateApiClient, isUniqueViolation, parseV1Json, v1Error } from "@/lib/v1/http";
 import { minutesToHours, updateWatchSchema } from "@/lib/v1/watch-format";
-import { findOrCreateWebhookDestination, loadWatch, rowToWatchJson } from "@/lib/v1/watches";
+import { accountAiConfig, findOrCreateWebhookDestination, loadWatch, rowToWatchJson } from "@/lib/v1/watches";
+import { conditionConfigError, parseStoredCondition } from "@/lib/watch-conditions";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -34,6 +35,15 @@ export async function PATCH(req: Request, { params }: Params) {
   const input = parsed.data;
   const current = row.target;
 
+  // Validate the condition as it will be after this update (it may depend on a changed intent).
+  const nextCondition = input.condition !== undefined ? input.condition : parseStoredCondition(current.condition);
+  const nextIntent = input.intent !== undefined ? input.intent || null : current.watchNote;
+  if (nextCondition && (input.condition !== undefined || input.intent !== undefined)) {
+    const aiConfigured = nextCondition.type === "intent" ? (await accountAiConfig(ownerId)) !== null : true;
+    const invalid = conditionConfigError({ condition: nextCondition, kind: current.kind, intent: nextIntent, aiConfigured });
+    if (invalid) return v1Error(422, invalid.code, invalid.message);
+  }
+
   if (input.enabled === true && !current.enabled) {
     const limitError = await monitorLimitError(ownerId, { excludingTargetId: id });
     if (limitError) return v1Error(403, "monitor_limit_reached", limitError);
@@ -42,6 +52,10 @@ export async function PATCH(req: Request, { params }: Params) {
   const updates: Partial<typeof schema.target.$inferInsert> = {};
   if (input.intent !== undefined) updates.watchNote = input.intent || null;
   if (input.enabled !== undefined) updates.enabled = input.enabled;
+  // Re-enabling re-arms a `once` watch that already fired.
+  if (input.enabled === true) updates.triggeredAt = null;
+  if (input.condition !== undefined) updates.condition = input.condition ? JSON.stringify(input.condition) : null;
+  if (input.triggerMode !== undefined) updates.triggerMode = input.triggerMode;
   if (input.intervalMinutes !== undefined) {
     const hours = minutesToHours(input.intervalMinutes);
     updates.checkIntervalHours = hours;

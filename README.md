@@ -245,7 +245,7 @@ Send it on every request as `Authorization: Bearer wk_…`.
 | `POST /api/v1/watches` | Create a watch (runs the first check before responding) |
 | `GET /api/v1/watches` | List watches, newest first. Filters: `externalUserId`, `externalRef`, `type`, `enabled`; paging: `limit` (≤100), `cursor` |
 | `GET /api/v1/watches/:id` | Get one watch |
-| `PATCH /api/v1/watches/:id` | Update `intent`, `intervalMinutes`, `enabled`, `callbackUrl`, `externalUserId`, `externalRef`, `metadata`, `aiTriageEnabled`, `aiSummaryEnabled` (send `null` to clear) |
+| `PATCH /api/v1/watches/:id` | Update `intent`, `intervalMinutes`, `enabled`, `callbackUrl`, `externalUserId`, `externalRef`, `metadata`, `condition`, `triggerMode`, `aiTriageEnabled`, `aiSummaryEnabled` (send `null` to clear) |
 | `DELETE /api/v1/watches/:id` | Delete a watch (`204`) |
 | `POST /api/v1/watches/:id/check` | Check now, ignoring the schedule (`409` if a check of that website is already running) |
 | `GET /api/v1/watches/:id/events` | Detected changes, newest first, including ones the AI filter held back (`suppressed: true`). Paging: `limit`, `cursor`; `includeSuppressed=false` to hide them |
@@ -262,7 +262,8 @@ curl -X POST https://your-instance.example.com/api/v1/watches \
     "externalUserId": "user_123",
     "externalRef": "watch_456",
     "metadata": { "conversationId": "c_789" },
-    "aiTriageEnabled": true
+    "condition": { "type": "intent" },
+    "triggerMode": "once"
   }'
 ```
 
@@ -273,7 +274,23 @@ curl -X POST https://your-instance.example.com/api/v1/watches \
 - The first check runs before the response (`"baseline": {"status": "completed"}`). An unreachable page returns `422 baseline_failed`, and a `price` watch on a page with no product returns `422 not_a_product_page`; nothing is kept in either case. Pass `"baseline": false` to skip this and let the worker take the first snapshot.
 - Several watches may target the same URL (for example, different users with different intents). Each keeps its own baseline, so each sees every change since its own last check.
 
-Changes are delivered to `callbackUrl` as the [webhook payload](#notifications) above; `alerts[].targetId` is the watch `id`. Errors always look like `{"error": {"code": "…", "message": "…"}}` (`401 unauthorized`, `404 not_found`, `409 check_in_progress` / `external_ref_conflict`, `422 validation_failed` / `invalid_url` / `invalid_cursor`, `403 monitor_limit_reached`).
+#### Conditions
+
+Without a `condition`, every detected change notifies. With one, only changes that satisfy it notify; the rest are still recorded as events with `suppressed: true` and the reason.
+
+| `condition` | Notifies when | Needs |
+|---|---|---|
+| `{"type": "intent"}` | The AI judges that *this change* satisfies the watch's `intent`, e.g. "an investment internship appears" or "availability opens". It sees the added and removed lines with the page as context, and quotes verbatim evidence. | Non-empty `intent`; an AI provider for the account (`OPENAI_API_KEY` / `AI_GATEWAY_API_KEY` or per-account keys) |
+| `{"type": "price_below", "value": 200, "currency": "USD"}` | The price *crosses* below `value` (for example 219 → 189); a price that stays below does not re-notify. `currency` is optional; when set, prices in another currency never match. No AI involved. | A `price` watch |
+| `{"type": "price_above", "value": 100}` | The price crosses above `value`. | A `price` watch |
+
+- Unclear AI answers count as no match. If the AI cannot be reached or answers unreadably, the change is **delivered anyway** with `condition.status: "error"`, so an outage never hides a real match.
+- A watch with a condition skips the general AI relevance filter.
+- `"triggerMode": "once"` stops the watch after its first matched notification (`status: "triggered"`); `PATCH {"enabled": true}` re-arms it. An `error` outcome does not use up the trigger.
+- When a watch with a condition is created, `baseline.condition` says whether the page **already** satisfies it (for example `"Already below USD 200: currently USD 180."`), so you can tell the user right away.
+- Events and webhook alerts carry `condition: {"status": "matched" | "not_matched" | "error", "reason", "evidence": [...]}`.
+
+Changes are delivered to `callbackUrl` as the [webhook payload](#notifications) above; `alerts[].targetId` is the watch `id`. Errors always look like `{"error": {"code": "…", "message": "…"}}` (`401 unauthorized`, `404 not_found`, `409 check_in_progress` / `external_ref_conflict`, `422 validation_failed` / `invalid_url` / `invalid_cursor` / `intent_required` / `ai_not_configured` / `condition_not_supported`, `403 monitor_limit_reached`).
 
 ---
 

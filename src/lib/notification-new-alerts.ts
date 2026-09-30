@@ -6,6 +6,7 @@ import { formatAttributionPlain, formatAttributionSlackMrkdwn } from "./alert-po
 import { parseDiff } from "./diff-display";
 import { APP_NAME, NEW_ALERTS_EVENT_TYPE } from "./product-info";
 import { alertPostfix, stripAlertPostfix } from "./server-managed-config";
+import type { ConditionOutcome } from "./watch-conditions";
 
 export type NewAlertsSite = { id: string; name: string; domain: string };
 
@@ -21,6 +22,8 @@ export type NewAlertsAlert = {
   totalAdded?: number;
   /** True total removed lines (may exceed what's stored in diffPreview). */
   totalRemoved?: number;
+  /** Outcome of the monitor's condition, when it has one (included in the webhook body). */
+  condition?: ConditionOutcome;
 };
 
 export type NewAlertsPayload = {

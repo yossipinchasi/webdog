@@ -38,6 +38,9 @@ function target(overrides: Partial<Target> = {}): Target {
     externalUserId: "user-42",
     externalRef: "watch-7",
     metadata: '{"chatId":"c1"}',
+    condition: null,
+    triggerMode: "every",
+    triggeredAt: null,
     createdAt: new Date("2025-12-31T00:00:00Z"),
     ...overrides,
   };
@@ -74,7 +77,9 @@ test("create: rejects bad URLs, intervals, unknown fields, and oversized metadat
     { url: "https://x.test", intervalMinutes: 30.5 },
     { url: "https://x.test", callbackUrl: "javascript:alert(1)" },
     { url: "https://x.test", type: "auto" },
-    { url: "https://x.test", condition: { type: "price_below", value: 200 } }, // Phase 2, not yet
+    { url: "https://x.test", condition: { type: "price_below", value: -1 } },
+    { url: "https://x.test", condition: { type: "keyword" } },
+    { url: "https://x.test", triggerMode: "twice" },
     { url: "https://x.test", metadata: { blob: "x".repeat(5000) } },
     { url: "https://x.test", metadata: ["not", "an", "object"] },
     { url: "https://x.test", intent: "x".repeat(301) },
@@ -96,11 +101,13 @@ test("list query: coerces limit and bounds it", () => {
   assert.equal(listWatchesQuerySchema.safeParse({ limit: "101" }).success, false);
 });
 
-test("status: paused > error > pending > active", () => {
-  assert.equal(watchStatus({ enabled: false, lastError: "x", lastCheckedAt: null }), "paused");
-  assert.equal(watchStatus({ enabled: true, lastError: "x", lastCheckedAt: new Date() }), "error");
-  assert.equal(watchStatus({ enabled: true, lastError: null, lastCheckedAt: null }), "pending");
-  assert.equal(watchStatus({ enabled: true, lastError: null, lastCheckedAt: new Date() }), "active");
+test("status: triggered > paused > error > pending > active", () => {
+  const t = { triggeredAt: null };
+  assert.equal(watchStatus({ enabled: false, lastError: null, lastCheckedAt: new Date(), triggeredAt: new Date() }), "triggered");
+  assert.equal(watchStatus({ ...t, enabled: false, lastError: "x", lastCheckedAt: null }), "paused");
+  assert.equal(watchStatus({ ...t, enabled: true, lastError: "x", lastCheckedAt: new Date() }), "error");
+  assert.equal(watchStatus({ ...t, enabled: true, lastError: null, lastCheckedAt: null }), "pending");
+  assert.equal(watchStatus({ ...t, enabled: true, lastError: null, lastCheckedAt: new Date() }), "active");
 });
 
 test("watch JSON: maps a target to the public shape", () => {
@@ -119,6 +126,9 @@ test("watch JSON: maps a target to the public shape", () => {
     metadata: { chatId: "c1" },
     aiTriageEnabled: true,
     aiSummaryEnabled: false,
+    condition: null,
+    triggerMode: "every",
+    triggeredAt: null,
     websiteId: "web_1",
     lastCheckedAt: "2026-01-01T00:00:00.000Z",
     nextCheckAt: "2026-01-01T00:15:00.000Z",
@@ -148,6 +158,9 @@ test("event JSON: content, links, and price changes", () => {
     read: false,
     suppressed: false,
     suppressionReason: null,
+    conditionStatus: null,
+    conditionReason: null,
+    conditionEvidence: null,
     createdAt: new Date("2026-01-02T00:00:00Z"),
   };
   const content = toWatchEventJson({
@@ -182,4 +195,40 @@ test("cursor: round-trips and rejects garbage", () => {
   for (const bad of ["", "!!!", Buffer.from('"x"').toString("base64url"), Buffer.from("[1]").toString("base64url"), Buffer.from('["1","a"]').toString("base64url")]) {
     assert.equal(decodeCursor(bad), null, bad);
   }
+});
+
+test("conditions: watch JSON exposes condition/trigger; events expose the outcome", () => {
+  const w = toWatchJson(
+    target({ condition: '{"type":"price_below","value":200,"currency":"USD"}', triggerMode: "once", enabled: false, triggeredAt: new Date("2026-02-01T00:00:00Z") }),
+    { id: "web_1", url: "https://x.test" },
+    null,
+  );
+  assert.deepEqual(w.condition, { type: "price_below", value: 200, currency: "USD" });
+  assert.equal(w.triggerMode, "once");
+  assert.equal(w.status, "triggered");
+  assert.equal(w.triggeredAt, "2026-02-01T00:00:00.000Z");
+
+  const e = toWatchEventJson({
+    id: "alt_9",
+    websiteId: "web_1",
+    targetId: "tgt_1",
+    kind: "PAGE_CONTENT",
+    title: "t",
+    details: "{}",
+    read: false,
+    suppressed: false,
+    suppressionReason: null,
+    conditionStatus: "matched",
+    conditionReason: "Investment internship posted",
+    conditionEvidence: '["Investment Intern (Summer)"]',
+    createdAt: new Date("2026-02-01T00:00:00Z"),
+  });
+  assert.deepEqual(e.condition, { status: "matched", reason: "Investment internship posted", evidence: ["Investment Intern (Summer)"] });
+});
+
+test("create/update schemas accept conditions and trigger modes", () => {
+  const c = createWatchSchema.parse({ url: "https://x.test", condition: { type: "intent" }, triggerMode: "once" });
+  assert.deepEqual([c.condition, c.triggerMode], [{ type: "intent" }, "once"]);
+  assert.equal(createWatchSchema.parse({ url: "https://x.test" }).triggerMode, "every");
+  assert.deepEqual(updateWatchSchema.parse({ condition: null }), { condition: null });
 });

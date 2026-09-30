@@ -111,8 +111,11 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     externalNotify?: boolean;
     aiChangeSummaryEnabled?: boolean;
     aiTriageEnabled?: boolean;
+    triggeredAt?: Date | null;
   } = {};
   if (parsed.data.enabled !== undefined) updates.enabled = parsed.data.enabled;
+  // Re-enabling re-arms a `once` watch that already fired.
+  if (parsed.data.enabled === true) updates.triggeredAt = null;
   if (parsed.data.checkIntervalHours !== undefined) {
     updates.checkIntervalHours = parsed.data.checkIntervalHours;
     const last = owned.target.lastCheckedAt;
