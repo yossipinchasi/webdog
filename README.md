@@ -166,6 +166,7 @@ All configuration is environment variables (see `.env.example`). Everything exce
 | `SNAPSHOT_RETENTION_DAYS` | No | Delete stored snapshots older than this many days (the newest snapshot per monitored page is always kept as the diff baseline). Blank keeps all history |
 | `WEBHOOK_POLL_SECONDS` | No | How often the worker sends due watch webhooks and retries (default `10`) |
 | `WATCH_ERROR_THRESHOLD` | No | Failed checks in a row before a watch reports `watch.error` (default `3`) |
+| `WEBHOOK_ALLOW_PRIVATE_ADDRESSES` | No | `true` lets webhooks reach private/internal addresses (localhost, 10.x, …). **Development and tests only**; leave unset in production |
 
 ### Auth (Better Auth)
 
@@ -325,11 +326,13 @@ function verify(header: string, rawBody: string, secret: string): boolean {
 }
 ```
 
+**Allowed targets.** Webhooks (watch callbacks, the test endpoint, and dashboard WEBHOOK destinations) may only reach publicly routable addresses. URLs whose host is, or resolves to, a private, loopback, link-local (including cloud metadata `169.254.169.254`), carrier-grade NAT, unique-local IPv6, multicast, or other reserved address are refused when saved (`422 callback_url_not_allowed`, or `400` in the dashboard). The same rule is enforced again while connecting, so a hostname that later resolves to an internal address (DNS rebinding) is blocked before anything is sent; such deliveries fail immediately and are not retried. For local development with a receiver on localhost, set `WEBHOOK_ALLOW_PRIVATE_ADDRESSES=true`.
+
 Delivery is **at-least-once**: events are written to an outbox in the same transaction as the change and sent immediately. Any non-2xx response, timeout (10s), or network error is retried after 30s, 2m, 10m, 30m, 1h, 3h, 6h, and 12h (±10% jitter). After 9 attempts the delivery is `failed` (retry it with `POST /deliveries/:id/retry`); `410 Gone` fails it at once. Redirects are not followed. The same event keeps the same `X-Watcher-Event-Id` and body on every attempt, so dedupe on it and return 2xx quickly.
 
 > Watches created before signed webhooks were routed through an unsigned `webdog_ai.new_alerts` WEBHOOK destination. The migration moves their `callbackUrl` onto the watch, so they now receive the signed events above instead. Dashboard WEBHOOK destinations are unchanged and still receive the `webdog_ai.new_alerts` payload.
 
-Errors always look like `{"error": {"code": "…", "message": "…"}}` (`401 unauthorized`, `404 not_found`, `409 check_in_progress` / `external_ref_conflict`, `422 validation_failed` / `invalid_url` / `invalid_cursor` / `intent_required` / `ai_not_configured` / `condition_not_supported`, `403 monitor_limit_reached`).
+Errors always look like `{"error": {"code": "…", "message": "…"}}` (`401 unauthorized`, `404 not_found`, `409 check_in_progress` / `external_ref_conflict`, `422 validation_failed` / `invalid_url` / `invalid_cursor` / `intent_required` / `ai_not_configured` / `condition_not_supported` / `callback_url_not_allowed`, `403 monitor_limit_reached`).
 
 ---
 

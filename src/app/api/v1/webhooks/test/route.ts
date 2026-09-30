@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { newId } from "@/lib/ids";
-import { authenticateApiClient, parseV1Json } from "@/lib/v1/http";
+import { authenticateApiClient, parseV1Json, v1Error } from "@/lib/v1/http";
+import { checkOutboundUrl } from "@/lib/outbound-guard";
 import { testWebhookSchema } from "@/lib/v1/watch-format";
 import { postSignedWebhook } from "@/lib/webhook-outbox";
 
@@ -15,6 +16,9 @@ export async function POST(req: Request) {
 
   const parsed = await parseV1Json(req, testWebhookSchema);
   if (parsed.response) return parsed.response;
+
+  const allowed = await checkOutboundUrl(parsed.data.url);
+  if (!allowed.ok) return v1Error(422, "callback_url_not_allowed", allowed.reason);
 
   const eventId = newId("evt");
   const body = JSON.stringify({

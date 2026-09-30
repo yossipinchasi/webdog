@@ -1,10 +1,10 @@
 /**
  * Generic outbound webhooks: POST JSON to a user-configured URL (https or http).
+ * Browser-safe (used by the dashboard for form validation); sending lives in
+ * `notify-outbound-webhook.server.ts`.
  */
 
-import { TEST_EVENT_TYPE, WEBHOOK_USER_AGENT } from "./product-info";
-
-const FETCH_TIMEOUT_MS = 15_000;
+import { TEST_EVENT_TYPE } from "./product-info";
 
 export function isValidAlertWebhookUrl(urlStr: string): boolean {
   const s = urlStr.trim();
@@ -16,23 +16,6 @@ export function isValidAlertWebhookUrl(urlStr: string): boolean {
     return true;
   } catch {
     return false;
-  }
-}
-
-export async function postAlertWebhookJson(url: string, body: unknown): Promise<void> {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "User-Agent": WEBHOOK_USER_AGENT,
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  });
-  if (!res.ok) {
-    const err = new Error(`alert_webhook_http_${res.status}`);
-    (err as Error & { status?: number }).status = res.status;
-    throw err;
   }
 }
 

@@ -6,7 +6,8 @@ import {
   formatNewAlertsEmailSubject,
   formatNewAlertsSlackText,
 } from "./notification-new-alerts";
-import { isValidAlertWebhookUrl, postAlertWebhookJson } from "./notify-outbound-webhook";
+import { isValidAlertWebhookUrl } from "./notify-outbound-webhook";
+import { postAlertWebhookJson } from "./notify-outbound-webhook.server";
 import { isValidSlackIncomingWebhookUrl, postSlackIncomingWebhook } from "./notify-slack";
 import { parseResendToEmails, sendResendEmail } from "./notify-resend";
 import type { NotificationChannel } from "./db/schema";

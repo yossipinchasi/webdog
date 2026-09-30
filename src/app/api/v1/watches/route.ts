@@ -16,6 +16,7 @@ import {
   TARGET_KIND_BY_WATCH_TYPE,
 } from "@/lib/v1/watch-format";
 import { conditionConfigError, type ConditionOutcome } from "@/lib/watch-conditions";
+import { checkOutboundUrl } from "@/lib/outbound-guard";
 import { evaluateSnapshotCondition } from "@/lib/watch-condition-eval";
 import {
   accountAiConfig,
@@ -105,6 +106,11 @@ export async function POST(req: Request) {
       aiConfigured: aiConfig !== null,
     });
     if (invalid) return v1Error(422, invalid.code, invalid.message);
+  }
+
+  if (input.callbackUrl) {
+    const allowed = await checkOutboundUrl(input.callbackUrl);
+    if (!allowed.ok) return v1Error(422, "callback_url_not_allowed", allowed.reason);
   }
 
   const limitError = await monitorLimitError(ownerId);

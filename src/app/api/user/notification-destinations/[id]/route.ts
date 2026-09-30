@@ -5,6 +5,7 @@ import { db } from "@/lib/db";
 import * as schema from "@/lib/db/schema";
 import { badRequest, notFound, parseJson, requireApiUserWithWriteOwner } from "@/lib/api";
 import { isValidAlertWebhookUrl } from "@/lib/notify-outbound-webhook";
+import { checkOutboundUrl } from "@/lib/outbound-guard";
 import { normalizeResendToEmailsForStorage } from "@/lib/notify-resend";
 import { isValidSlackIncomingWebhookUrl } from "@/lib/notify-slack";
 import { isResendSendFromEmailManagedByEnv } from "@/lib/server-managed-config";
@@ -131,6 +132,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         if (!isValidAlertWebhookUrl(u)) {
           return badRequest("alertWebhookUrl must be a valid http(s) URL");
         }
+        const allowed = await checkOutboundUrl(u);
+        if (!allowed.ok) return badRequest(`This webhook URL is not allowed: ${allowed.reason}`);
         alertWebhookUrl = u;
       }
     }
