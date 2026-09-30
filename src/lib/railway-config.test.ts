@@ -80,7 +80,7 @@ test("environment: shared database + secrets on both; the worker gets the web ap
     const v = s.variables ?? {};
     assert.deepEqual(v.DATABASE_URL, { type: "reference", resource: "database.postgres", output: "DATABASE_URL" }, s.name);
     assert.deepEqual(v.NODE_ENV, { type: "literal", value: "production" }, s.name);
-    for (const secret of ["BETTER_AUTH_SECRET", "CONTEXT_DEV_API_KEY", "OPENAI_API_KEY", "AI_GATEWAY_API_KEY", "RESEND_API_KEY"]) {
+    for (const secret of ["BETTER_AUTH_SECRET", "DATA_ENCRYPTION_KEY", "CONTEXT_DEV_API_KEY", "OPENAI_API_KEY", "AI_GATEWAY_API_KEY", "RESEND_API_KEY"]) {
       assert.deepEqual(v[secret], { type: "preserve" }, `${s.name}.${secret} is set in the dashboard, never in code`);
     }
   }

@@ -10,6 +10,7 @@ import {
   effectiveOpenAiApiKey,
   effectiveVercelAiGatewayApiKey,
 } from "@/lib/server-managed-config";
+import { unmaskedOr } from "@/lib/secret-mask";
 
 const providerSchema = z.enum(["openai", "vercel_gateway"]);
 
@@ -23,7 +24,8 @@ async function resolveApiKey(
   ownerId: string,
   draftApiKey?: string | null,
 ): Promise<string | null> {
-  const draft = draftApiKey?.trim();
+  // The settings form holds a masked copy of the saved key; fall back to the stored one.
+  const draft = unmaskedOr(draftApiKey, null);
   if (draft) return draft;
 
   const [row] = await db

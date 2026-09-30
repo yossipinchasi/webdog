@@ -1,0 +1,1 @@
+ALTER TABLE "apiClient" ALTER COLUMN "webhookSecret" DROP DEFAULT;

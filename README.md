@@ -43,6 +43,7 @@ Paste any URL and webdog will:
 - [Configuration](#configuration)
 - [Notifications](#notifications)
 - [Watcher API (v1)](#watcher-api-v1)
+- [Security](#security)
 - [Deployment](#deployment)
 - [Scripts](#scripts)
 - [Project structure](#project-structure)
@@ -163,6 +164,8 @@ All configuration is environment variables (see `.env.example`). Everything exce
 | `POSTGRES_PORT` | No | Host port for the Docker Compose Postgres (default `5432`) |
 | `CONTEXT_DEV_API_KEY` | No | Server-managed [Context.dev](https://link.context.dev/webdog) key used for all accounts. Leave blank to let each account save its own key in Settings |
 | `SCRAPE_CRON` | No | Worker schedule, cron syntax (default `*/15 * * * *`) |
+| `DATA_ENCRYPTION_KEY` | Prod only | 32 random bytes, base64 (`openssl rand -base64 32`). Encrypts stored credentials at rest (see [Security](#security)). **Back it up: if it is lost, stored credentials cannot be recovered.** Without it outside production, a development-only key is used |
+| `DATA_ENCRYPTION_KEY_PREVIOUS` | No | Comma-separated old keys, still accepted for decryption during a key rotation |
 | `SNAPSHOT_RETENTION_DAYS` | No | Delete stored snapshots older than this many days (the newest snapshot per monitored page is always kept as the diff baseline). Blank keeps all history |
 | `WEBHOOK_POLL_SECONDS` | No | How often the worker sends due watch webhooks and retries (default `10`) |
 | `WATCH_ERROR_THRESHOLD` | No | Failed checks in a row before a watch reports `watch.error` (default `3`) |
@@ -276,6 +279,7 @@ curl -X POST https://your-instance.example.com/api/v1/watches \
   }'
 ```
 
+- `callbackUrl` is stored encrypted and only ever returned masked (e.g. `https://platform.example.com/hooks/••••ab12`); send the full URL to change it.
 - `type` is `page` (content changes, the default), `price` (product price), or `links` (the site's sitemap; the URL's domain is used).
 - `intent` (≤300 characters) labels the watch and steers the AI relevance filter and summaries.
 - `intervalMinutes` is 15–525600 (default 1440).
@@ -309,7 +313,7 @@ A watch with a `callbackUrl` receives signed JSON `POST`s:
 | `watch.error` | Checks have failed `WATCH_ERROR_THRESHOLD` (3) times in a row; once per failure streak | `error: {message, consecutiveFailures, failingSince}` |
 | `watch.recovered` | A watch that reported `watch.error` checks successfully again | `recovery: {failedChecks, failingSince}` |
 
-`watch` is the watch as the API returns it, including your `externalUserId`, `externalRef`, and `metadata`, so you can route the event without a lookup. Held changes (condition not met) are not sent.
+`watch` is the watch as the API returns it (minus `callbackUrl`, which is the receiver itself), including your `externalUserId`, `externalRef`, and `metadata`, so you can route the event without a lookup. Held changes (condition not met) are not sent.
 
 Headers: `X-Watcher-Event-Id` (equals the body `id`), `X-Watcher-Event-Type`, `X-Watcher-Attempt`, and `X-Watcher-Signature: t=<unix seconds>,v1=<hex>`, where `v1` is HMAC-SHA256 of `"<t>.<raw body>"` keyed with your webhook secret. Verify it against the raw body and reject stale timestamps:
 
@@ -333,6 +337,18 @@ Delivery is **at-least-once**: events are written to an outbox in the same trans
 > Watches created before signed webhooks were routed through an unsigned `webdog_ai.new_alerts` WEBHOOK destination. The migration moves their `callbackUrl` onto the watch, so they now receive the signed events above instead. Dashboard WEBHOOK destinations are unchanged and still receive the `webdog_ai.new_alerts` payload.
 
 Errors always look like `{"error": {"code": "…", "message": "…"}}` (`401 unauthorized`, `404 not_found`, `409 check_in_progress` / `external_ref_conflict`, `422 validation_failed` / `invalid_url` / `invalid_cursor` / `intent_required` / `ai_not_configured` / `condition_not_supported` / `callback_url_not_allowed`, `403 monitor_limit_reached`).
+
+---
+
+## Security
+
+**Credentials are encrypted at rest.** API-key webhook signing secrets, per-account Context.dev / OpenAI / AI Gateway / Resend keys, Slack and webhook destination URLs, watch callback URLs, and queued webhook URLs are stored with AES-256-GCM (random nonce per value, the column bound as authenticated data) under `DATA_ENCRYPTION_KEY`. The key lives only in the environment, never in the database or the repo. Stored values look like `enc:v1:<keyId>:…`.
+
+- **Never sent back decrypted.** The dashboard and the API show masked values (`••••ab12`, `https://hooks.slack.com/services/••••ab12`). Saving a form with a masked value unchanged keeps the stored credential; type a new value to replace it. Errors and logs never include credential values.
+- **Existing plaintext is encrypted automatically** by `npm run db:migrate:deploy` (under the migration lock). The backfill checks each ciphertext before writing it and only replaces the exact value it read, so it is safe to interrupt and re-run. `npm run secrets -- verify` reports anything still plaintext or undecryptable.
+- **Key rotation:** set the new key as `DATA_ENCRYPTION_KEY` and the old one in `DATA_ENCRYPTION_KEY_PREVIOUS`; values encrypted with either key decrypt, new writes use the new key. (Re-encrypting existing values under the new key is not automated yet; keep the old key configured until then.)
+- **Losing the key loses the stored credentials** (users re-enter their keys and destinations; rotate API clients' webhook secrets). Back it up somewhere other than the database.
+- Before encryption, credentials were stored in plaintext. Old row versions can linger in Postgres dead tuples, WAL, and backups after the backfill; rotate any credential whose earlier exposure matters.
 
 ---
 
@@ -367,7 +383,7 @@ Before a release that includes migrations, take a backup (`railway connect postg
 
 1. Create an empty Railway project and `railway link` it.
 2. `railway config plan` to review what `.railway/railway.ts` will create, then `railway config apply`.
-3. In the Railway dashboard, set the secret variables on **both** `web` and `worker` (they are declared with `preserve()`, so applies never overwrite or print them): `BETTER_AUTH_SECRET` (generate locally with `openssl rand -base64 32`) and `CONTEXT_DEV_API_KEY`; optionally `OPENAI_API_KEY` or `AI_GATEWAY_API_KEY`, `AI_MODEL`, `RESEND_API_KEY`, `RESEND_SEND_FROM_EMAIL`.
+3. In the Railway dashboard, set the secret variables on **both** `web` and `worker`, with the same values (they are declared with `preserve()`, so applies never overwrite or print them): `BETTER_AUTH_SECRET` and `DATA_ENCRYPTION_KEY` (generate each locally with `openssl rand -base64 32`; keep a backup of the encryption key) and `CONTEXT_DEV_API_KEY`; optionally `OPENAI_API_KEY` or `AI_GATEWAY_API_KEY`, `AI_MODEL`, `RESEND_API_KEY`, `RESEND_SEND_FROM_EMAIL`.
 4. Generate a public domain for `web` (`railway domain --service web`). The worker's `BETTER_AUTH_URL` references it; the worker cannot start without a public URL.
 5. Release as above. The first deploy applies every migration to the empty database.
 
@@ -404,6 +420,7 @@ Set `BETTER_AUTH_URL` (or `NEXT_PUBLIC_APP_URL`) to your public origin and `BETT
 | `npm run worker` | Run the scrape/diff worker on the cron schedule |
 | `npm run worker:once` | Single worker pass, then exit (handy for debugging) |
 | `npm run api-keys -- <create\|list\|revoke\|webhook-secret>` | Manage Watcher API keys and webhook secrets |
+| `npm run secrets -- <encrypt [--dry-run]\|verify>` | Encrypt remaining plaintext credentials / check that every stored credential decrypts |
 | `npm run build` / `npm run start` | Production build / serve |
 | `npm run db:up` / `npm run db:down` | Start / stop local Postgres via Docker Compose |
 | `npm run db:push` | Push the Drizzle schema to the database (local dev) |

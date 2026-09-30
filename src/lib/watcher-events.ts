@@ -10,7 +10,7 @@
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
-import type { WatchEventJson, WatchJson } from "./v1/watch-format";
+import type { WatchEventJson, WebhookWatchJson as WatchJson } from "./v1/watch-format";
 
 export type WatcherEventType = "watch.triggered" | "watch.error" | "watch.recovered";
 

@@ -16,6 +16,7 @@
     "worker": "tsx scripts/worker.ts",
     "worker:once": "tsx scripts/worker.ts --once",
     "api-keys": "tsx scripts/api-keys.ts",
+    "secrets": "tsx scripts/secrets.ts",
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
     "db:check": "tsx scripts/check-db.ts",

@@ -8,6 +8,7 @@ import { accountOwnerColumnAccessible } from "@/lib/account-access";
 import { newId } from "@/lib/ids";
 import { isValidAlertWebhookUrl } from "@/lib/notify-outbound-webhook";
 import { checkOutboundUrl } from "@/lib/outbound-guard";
+import { isMaskedValue } from "@/lib/secret-mask";
 import { normalizeResendToEmailsForStorage } from "@/lib/notify-resend";
 import { isValidSlackIncomingWebhookUrl } from "@/lib/notify-slack";
 import { isResendSendFromEmailManagedByEnv } from "@/lib/server-managed-config";
@@ -61,7 +62,7 @@ export async function POST(req: Request) {
 
   if (parsed.data.channel === "SLACK") {
     const url = parsed.data.slackWebhookUrl.trim();
-    if (!isValidSlackIncomingWebhookUrl(url)) {
+    if (isMaskedValue(url) || !isValidSlackIncomingWebhookUrl(url)) {
       return badRequest("slackWebhookUrl must be a valid https://hooks.slack.com/services/… URL");
     }
     await db.insert(schema.notificationDestination).values({
@@ -107,7 +108,7 @@ export async function POST(req: Request) {
     });
   } else {
     const url = parsed.data.alertWebhookUrl.trim();
-    if (!isValidAlertWebhookUrl(url)) {
+    if (isMaskedValue(url) || !isValidAlertWebhookUrl(url)) {
       return badRequest("alertWebhookUrl must be a valid http(s) URL");
     }
     const allowed = await checkOutboundUrl(url);

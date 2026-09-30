@@ -9,13 +9,17 @@
 // unlocked runs could both apply them; the lock is what prevents that. Pending
 // migrations are applied in one transaction: a failure leaves the database unchanged.
 // Uses the same `drizzle.__drizzle_migrations` table as `drizzle-kit migrate`.
-// Env: DATABASE_URL.
+//
+// Still under the lock, it then encrypts any credentials stored as plaintext before
+// encryption at rest (see src/lib/secret-backfill.ts; safe to interrupt and re-run).
+// Env: DATABASE_URL, DATA_ENCRYPTION_KEY (required in production).
 
 import "dotenv/config";
 import pg from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { resolveDatabaseUrl } from "../src/lib/db/database-url";
+import { backfillSecrets } from "../src/lib/secret-backfill";
 
 /** Advisory-lock key ("WDOG", "MIGR"); distinct from the per-website check locks. */
 const LOCK_KEY = [0x57444f47, 0x4d494752] as const;
@@ -37,6 +41,13 @@ async function main() {
     const after = await appliedCount(client);
     console.log(
       after > before ? `[migrate] applied ${after - before} migration(s); ${after} total` : `[migrate] up to date (${after} applied)`,
+    );
+
+    const encrypted = (await backfillSecrets(client)).filter((r) => r.encrypted > 0);
+    console.log(
+      encrypted.length
+        ? `[migrate] encrypted plaintext secrets: ${encrypted.map((r) => `${r.column}=${r.encrypted}`).join(", ")}`
+        : "[migrate] no plaintext secrets to encrypt",
     );
   } finally {
     // Closing the session releases the lock even if unlocking fails.
