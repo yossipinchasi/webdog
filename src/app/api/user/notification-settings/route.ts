@@ -88,15 +88,7 @@ function aiSettingsResponse(row: SettingsRow | null) {
     openaiApiKeyManaged,
     vercelAiGatewayApiKeyManaged,
     aiModelManaged,
-    aiConfigured: Boolean(
-      row &&
-        resolveAiSummaryConfig({
-          aiProvider: row.aiProvider,
-          openaiApiKey: row.openaiApiKey,
-          vercelAiGatewayApiKey: row.vercelAiGatewayApiKey,
-          aiModel: row.aiModel,
-        }),
-    ),
+    aiConfigured: Boolean(resolveAiSummaryConfig(row)),
   };
 }
 

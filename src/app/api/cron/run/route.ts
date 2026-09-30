@@ -40,5 +40,11 @@ export async function POST(req: Request) {
     force: true,
     ...(parsed.data.targetId ? { targetId: parsed.data.targetId } : {}),
   });
+  if (result.skipped) {
+    return NextResponse.json(
+      { error: "A check is already running for this website. Try again in a moment." },
+      { status: 409 },
+    );
+  }
   return NextResponse.json(result);
 }

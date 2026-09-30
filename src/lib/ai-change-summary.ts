@@ -48,12 +48,20 @@ export type AlertDetailsForSummary = {
   afterMarkdown?: string;
 };
 
-export function resolveAiSummaryConfig(settings: {
-  aiProvider: AiProvider | null;
-  openaiApiKey: string | null;
-  vercelAiGatewayApiKey: string | null;
-  aiModel: string | null;
-}): AiSummaryConfig | null {
+/**
+ * Resolve the account's AI config. `settings` may be absent (the account never saved
+ * Settings); server-managed keys (OPENAI_API_KEY / AI_GATEWAY_API_KEY / AI_MODEL)
+ * still apply in that case.
+ */
+export function resolveAiSummaryConfig(
+  row: {
+    aiProvider: AiProvider | null;
+    openaiApiKey: string | null;
+    vercelAiGatewayApiKey: string | null;
+    aiModel: string | null;
+  } | null | undefined,
+): AiSummaryConfig | null {
+  const settings = row ?? { aiProvider: null, openaiApiKey: null, vercelAiGatewayApiKey: null, aiModel: null };
   const openaiConfigured = Boolean(effectiveOpenAiApiKey(settings.openaiApiKey));
   const vercelConfigured = Boolean(effectiveVercelAiGatewayApiKey(settings.vercelAiGatewayApiKey));
   const provider = resolveEffectiveAiProvider({

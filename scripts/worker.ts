@@ -4,22 +4,52 @@
 //   npm run worker            # long-running
 //   npm run worker:once       # single pass, then exit
 // Env: SCRAPE_CRON (default every 15 min), CONTEXT_DEV_API_KEY, RESEND_API_KEY,
-// RESEND_SEND_FROM_EMAIL, POSTFIX_TO_ALERTS, MAX_ALERTS, DATABASE_URL.
+// RESEND_SEND_FROM_EMAIL, POSTFIX_TO_ALERTS, MAX_ALERTS, SNAPSHOT_RETENTION_DAYS, DATABASE_URL.
 
 import "dotenv/config";
 import cron from "node-cron";
 import { runAllChecks } from "../src/lib/scraper";
+import { pruneSnapshots, snapshotRetentionDays } from "../src/lib/snapshot-retention";
+
+/** Pruning scans the snapshot table, so run it at most hourly rather than every tick. */
+const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+
+let running = false;
+let lastPruneAt = 0;
+
+async function pruneIfDue() {
+  const days = snapshotRetentionDays();
+  if (days === null || Date.now() - lastPruneAt < PRUNE_INTERVAL_MS) return;
+  lastPruneAt = Date.now();
+  try {
+    const deleted = await pruneSnapshots(days);
+    if (deleted > 0) console.log(`[worker] pruned ${deleted} snapshot(s) older than ${days} day(s)`);
+  } catch (err) {
+    console.error("[worker] snapshot pruning failed:", err);
+  }
+}
 
 async function runOnce() {
+  // A tick that outlasts the cron interval must not overlap the next one; the
+  // per-website check lock also guards against other processes.
+  if (running) {
+    console.log(`[worker] tick ${new Date().toISOString()} skipped — previous run still in progress`);
+    return;
+  }
+  running = true;
   const start = Date.now();
   console.log(`[worker] tick ${new Date().toISOString()}`);
   try {
     const result = await runAllChecks();
     console.log(
-      `[worker] done in ${Date.now() - start}ms — ${result.websites} site(s), ${result.alerts} alert(s), ${result.errors} error(s)`,
+      `[worker] done in ${Date.now() - start}ms — ${result.websites} site(s), ${result.alerts} alert(s), ${result.errors} error(s)` +
+        (result.skipped > 0 ? `, ${result.skipped} site(s) skipped (check already running elsewhere)` : ""),
     );
+    await pruneIfDue();
   } catch (err) {
     console.error("[worker] run failed:", err);
+  } finally {
+    running = false;
   }
 }
 

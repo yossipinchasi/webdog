@@ -29,6 +29,7 @@ import {
   type AlertDetailsForSummary,
 } from "./ai-change-summary";
 import { triageAlert } from "./ai-alert-triage";
+import { withWebsiteCheckLock } from "./website-check-lock";
 
 function sha256(s: string): string {
   return createHash("sha256").update(s).digest("hex");
@@ -323,11 +324,27 @@ export function computeNextCheckDueAfterSuccess(
   return new Date(next);
 }
 
+export type RunWebsiteChecksResult = {
+  alerts: number;
+  errors: number;
+  /** True when another run already held this website's check lock, so nothing ran. */
+  skipped?: boolean;
+};
+
 /**
  * Run all enabled targets for a single website. Writes new snapshots and
- * alert rows as side effects.
+ * alert rows as side effects. Runs for the same website never overlap (across
+ * processes); a run that finds one already in progress is skipped, not queued.
  */
 export async function runWebsiteChecks(
+  websiteId: string,
+  options?: RunWebsiteChecksOptions,
+): Promise<RunWebsiteChecksResult> {
+  const run = await withWebsiteCheckLock(websiteId, () => runWebsiteChecksLocked(websiteId, options));
+  return run.acquired ? run.value : { alerts: 0, errors: 0, skipped: true };
+}
+
+async function runWebsiteChecksLocked(
   websiteId: string,
   options?: RunWebsiteChecksOptions,
 ): Promise<{ alerts: number; errors: number }> {
@@ -347,14 +364,8 @@ export async function runWebsiteChecks(
     .where(eq(schema.userNotificationSettings.userId, website.userId))
     .limit(1);
 
-  const aiConfig = userSettings
-    ? resolveAiSummaryConfig({
-        aiProvider: userSettings.aiProvider,
-        openaiApiKey: userSettings.openaiApiKey,
-        vercelAiGatewayApiKey: userSettings.vercelAiGatewayApiKey,
-        aiModel: userSettings.aiModel,
-      })
-    : null;
+  // Accounts without a settings row still get server-managed AI keys.
+  const aiConfig = resolveAiSummaryConfig(userSettings);
 
   const userDestinations = await db
     .select({
@@ -628,21 +639,29 @@ export async function runWebsiteChecks(
   return { alerts: alerts.length, errors };
 }
 
-export async function runAllChecks(): Promise<{ websites: number; alerts: number; errors: number }> {
+export async function runAllChecks(): Promise<{
+  websites: number;
+  alerts: number;
+  errors: number;
+  /** Websites skipped because another run already held their check lock. */
+  skipped: number;
+}> {
   const websites = await db.select({ id: schema.website.id }).from(schema.website);
   let alerts = 0;
   let errors = 0;
+  let skipped = 0;
   for (const w of websites) {
     try {
       const res = await runWebsiteChecks(w.id);
       alerts += res.alerts;
       errors += res.errors;
+      if (res.skipped) skipped += 1;
     } catch (err) {
       errors += 1;
       console.error(`website ${w.id} check failed:`, err);
     }
   }
-  return { websites: websites.length, alerts, errors };
+  return { websites: websites.length, alerts, errors, skipped };
 }
 
 export { parseDomain };
