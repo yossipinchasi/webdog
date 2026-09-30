@@ -43,7 +43,8 @@ export default defineRailway(() => {
     healthcheck: "/api/health",
     healthcheckTimeout: 300,
     replicas: 1,
-    deploy: { restartPolicyType: "ON_FAILURE", restartPolicyMaxRetries: 10 },
+    // Restart policy: Railway's default ("On Failure", max 10 restarts). Not declared, because
+    // Railway stores its default as unset and an explicit value shows as permanent plan drift.
     // The web app derives its public URL from RAILWAY_PUBLIC_DOMAIN. With a custom domain,
     // set BETTER_AUTH_URL to it here and on the worker.
     env: shared,

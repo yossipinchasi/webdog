@@ -52,14 +52,15 @@ test("both services run the lock-protected migration before starting", async () 
   assert.deepEqual(worker.deploy?.preDeployCommand, ["npm run db:migrate:deploy"]);
 });
 
-test("web: Next.js build, start, health check, restart on failure, one replica", async () => {
+test("web: Next.js build, start, health check, default restart policy, one replica", async () => {
   const { web } = await load();
   assert.equal(web.build?.buildCommand, "npm run build");
   assert.equal(web.deploy?.startCommand, "npm run start");
   assert.equal(web.deploy?.healthcheckPath, "/api/health");
   assert.equal(web.deploy?.healthcheckTimeout, 300);
-  assert.equal(web.deploy?.restartPolicyType, "ON_FAILURE");
-  assert.equal(web.deploy?.restartPolicyMaxRetries, 10);
+  // Railway's default ("On Failure", max 10). Declaring it causes permanent plan drift.
+  assert.equal(web.deploy?.restartPolicyType, undefined);
+  assert.equal(web.deploy?.restartPolicyMaxRetries, undefined);
   assert.equal(web.deploy?.numReplicas, 1);
 });
 

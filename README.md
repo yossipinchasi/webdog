@@ -342,7 +342,7 @@ Production runs on Railway as three resources, defined in code in [`.railway/rai
 | Resource | Runs | Notes |
 |---|---|---|
 | `postgres` | Railway PostgreSQL | Private networking only |
-| `web` | `npm run build` → pre-deploy `npm run db:migrate:deploy` → `npm run start` | Public HTTPS domain; health check `/api/health` (verifies Postgres); restarts on failure |
+| `web` | `npm run build` → pre-deploy `npm run db:migrate:deploy` → `npm run start` | Public HTTPS domain; health check `/api/health` (verifies Postgres); restarts on failure (Railway's default: up to 10 times) |
 | `worker` | no build step → pre-deploy `npm run db:migrate:deploy` → `npm run worker` | No domain; always restarted; runs scheduled checks and webhook delivery/retries. Keep exactly **one** replica |
 
 Both services run `npm run db:migrate:deploy` ([`scripts/migrate.ts`](./scripts/migrate.ts)) before starting. It applies pending migrations while holding a Postgres advisory lock, so the two services never migrate at the same time and neither starts new code against an old schema. Pending migrations apply in one transaction: if one fails, the database is left unchanged and the deploy stops before the new code starts.
