@@ -12,3 +12,5 @@ This file names the core concepts used by webdog.ai so future architecture work 
 - **Notification Destination** — a named outbound route for alerts, such as Slack, email, or webhook.
 - **Context.dev Access** — the credential path used for scraping, extraction, screenshots, and brand data. In a Managed Deployment this is server-managed.
 - **Email Delivery** — the Resend credential and sender path used for email notification destinations. In a Managed Deployment this can be server-managed.
+- **Watch** — a monitor created and managed through the Watcher API (`/api/v1`). It can carry the caller's own end-user id, reference, and metadata, and several watches may target the same page, each with its own baseline.
+- **API Client** — a machine credential (API key) for the Watcher API. It acts as the account it was created for.

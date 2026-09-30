@@ -10,6 +10,7 @@ const EXPECTED_TABLES = [
   "accountInvite",
   "accountMembership",
   "alert",
+  "apiClient",
   "notificationDestination",
   "session",
   "snapshot",

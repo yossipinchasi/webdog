@@ -4,7 +4,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { db } from "./db";
 import * as schema from "./db/schema";
 import {
@@ -48,22 +48,37 @@ function describeCheckError(err: unknown): string {
   return "The check failed for an unknown reason.";
 }
 
-type SnapshotKind = "SITEMAP" | "MARKDOWN" | "PRODUCT";
-
-async function latestSnapshot(websiteId: string, kind: SnapshotKind, targetUrl: string | null) {
+/**
+ * A monitor's diff baseline: its own most recent snapshot. Keyed by monitor (not URL)
+ * so several monitors on one page each see every change since *their* last check.
+ */
+async function latestSnapshot(targetId: string) {
   const rows = await db
     .select()
     .from(schema.snapshot)
-    .where(
-      and(
-        eq(schema.snapshot.websiteId, websiteId),
-        eq(schema.snapshot.kind, kind),
-        targetUrl === null ? isNull(schema.snapshot.targetUrl) : eq(schema.snapshot.targetUrl, targetUrl),
-      ),
-    )
+    .where(eq(schema.snapshot.targetId, targetId))
     .orderBy(desc(schema.snapshot.createdAt))
     .limit(1);
   return rows[0] ?? null;
+}
+
+/** The snapshot row a successful check of `target` stores, from this run's scrape cache. */
+function snapshotForTarget(
+  target: Target,
+  cache: SiteScrapeCache,
+): Pick<typeof schema.snapshot.$inferInsert, "kind" | "targetUrl" | "payload" | "hash"> | null {
+  if (target.kind === "SITEMAP_LINKS") {
+    return cache.sitemap
+      ? { kind: "SITEMAP", targetUrl: null, payload: JSON.stringify(cache.sitemap.urls), hash: cache.sitemap.hash }
+      : null;
+  }
+  if (!target.pageUrl) return null;
+  if (target.kind === "PRODUCT_PRICE") {
+    const p = cache.product.get(target.pageUrl);
+    return p ? { kind: "PRODUCT", targetUrl: target.pageUrl, payload: p.payload, hash: p.hash } : null;
+  }
+  const md = cache.markdown.get(target.pageUrl);
+  return md ? { kind: "MARKDOWN", targetUrl: target.pageUrl, payload: md.md, hash: md.hash } : null;
 }
 
 export { diffPreview } from "./diff-preview";
@@ -159,7 +174,7 @@ async function handleLinkTarget(
   alerts: AlertInsert[],
 ): Promise<void> {
   const current = await ensureSitemap(website, cache);
-  const prev = await latestSnapshot(website.id, "SITEMAP", null);
+  const prev = await latestSnapshot(target.id);
   const prevUrls: string[] = prev ? (JSON.parse(prev.payload) as string[]) : [];
 
   const prevSet = new Set(prevUrls);
@@ -202,7 +217,7 @@ async function handleContentTarget(
   if (!target.pageUrl) return;
   const page = target.pageUrl;
   const curr = await ensureMarkdown(page, cache);
-  const prev = await latestSnapshot(website.id, "MARKDOWN", page);
+  const prev = await latestSnapshot(target.id);
   // The screenshot only backs the "current version" thumbnail, not change
   // detection (that's the markdown hash). Capture it on the first snapshot and
   // whenever the content actually changes; an unchanged page keeps its last
@@ -252,7 +267,7 @@ async function handleProductPriceTarget(
   const value = { payload, hash: sha256(payload) };
   cache.product.set(page, value);
 
-  const prev = await latestSnapshot(website.id, "PRODUCT", page);
+  const prev = await latestSnapshot(target.id);
   const prevData = prev ? (JSON.parse(prev.payload) as ProductSnapshotData) : null;
   const priceChanged =
     prevData !== null &&
@@ -399,6 +414,7 @@ async function runWebsiteChecksLocked(
     contextApiKey,
   };
   const alerts: AlertInsert[] = [];
+  const checkedTargets: Target[] = [];
   let errors = 0;
 
   const singleTarget = Boolean(options?.targetId);
@@ -415,6 +431,9 @@ async function runWebsiteChecksLocked(
       } else {
         await handleContentTarget(website, t, cache, alerts);
       }
+      // Recorded before the schedule update below: once a handler has compared against
+      // the baseline (and maybe emitted an alert), the new snapshot must be stored.
+      checkedTargets.push(t);
       const nowMs = Date.now();
       // Read fresh interval + deadline inside a DB transaction so a concurrent PATCH
       // cannot leave checkIntervalHours and nextCheckDueAt mismatched after we scrape.
@@ -473,36 +492,16 @@ async function runWebsiteChecksLocked(
     }
   }
 
-  if (cache.sitemap) {
+  // One snapshot per checked monitor — its new diff baseline. Monitors sharing a URL
+  // reuse this run's single scrape but each keeps its own baseline row.
+  for (const t of checkedTargets) {
+    const snap = snapshotForTarget(t, cache);
+    if (!snap) continue;
     await db.insert(schema.snapshot).values({
       id: newId("snp"),
       websiteId: website.id,
-      kind: "SITEMAP",
-      targetUrl: null,
-      payload: JSON.stringify(cache.sitemap.urls),
-      hash: cache.sitemap.hash,
-      createdAt: new Date(),
-    });
-  }
-  for (const [url, md] of cache.markdown.entries()) {
-    await db.insert(schema.snapshot).values({
-      id: newId("snp"),
-      websiteId: website.id,
-      kind: "MARKDOWN",
-      targetUrl: url,
-      payload: md.md,
-      hash: md.hash,
-      createdAt: new Date(),
-    });
-  }
-  for (const [url, p] of cache.product.entries()) {
-    await db.insert(schema.snapshot).values({
-      id: newId("snp"),
-      websiteId: website.id,
-      kind: "PRODUCT",
-      targetUrl: url,
-      payload: p.payload,
-      hash: p.hash,
+      targetId: t.id,
+      ...snap,
       createdAt: new Date(),
     });
   }

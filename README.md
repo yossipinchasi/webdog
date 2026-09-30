@@ -42,6 +42,7 @@ Paste any URL and webdog will:
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
 - [Notifications](#notifications)
+- [Watcher API (v1)](#watcher-api-v1)
 - [Deployment](#deployment)
 - [Scripts](#scripts)
 - [Project structure](#project-structure)
@@ -221,6 +222,61 @@ Every destination has a **send test** action in Settings so you can verify wirin
 
 ---
 
+## Watcher API (v1)
+
+A machine API under `/api/v1` lets another service (for example an AI agent platform) create and manage monitors, called **watches**, without the dashboard. Watches created through the API show up in the dashboard like any other monitor.
+
+### Authentication
+
+Create a key for an existing account (sign up in the dashboard first). The key acts as that account and is shown once; only its hash is stored:
+
+```bash
+npm run api-keys -- create --email you@example.com --name "My platform"
+npm run api-keys -- list
+npm run api-keys -- revoke <apiClientId>
+```
+
+Send it on every request as `Authorization: Bearer wk_…`.
+
+### Endpoints
+
+| Method & path | What it does |
+|---|---|
+| `POST /api/v1/watches` | Create a watch (runs the first check before responding) |
+| `GET /api/v1/watches` | List watches, newest first. Filters: `externalUserId`, `externalRef`, `type`, `enabled`; paging: `limit` (≤100), `cursor` |
+| `GET /api/v1/watches/:id` | Get one watch |
+| `PATCH /api/v1/watches/:id` | Update `intent`, `intervalMinutes`, `enabled`, `callbackUrl`, `externalUserId`, `externalRef`, `metadata`, `aiTriageEnabled`, `aiSummaryEnabled` (send `null` to clear) |
+| `DELETE /api/v1/watches/:id` | Delete a watch (`204`) |
+| `POST /api/v1/watches/:id/check` | Check now, ignoring the schedule (`409` if a check of that website is already running) |
+| `GET /api/v1/watches/:id/events` | Detected changes, newest first, including ones the AI filter held back (`suppressed: true`). Paging: `limit`, `cursor`; `includeSuppressed=false` to hide them |
+
+```bash
+curl -X POST https://your-instance.example.com/api/v1/watches \
+  -H "Authorization: Bearer $WEBDOG_API_KEY" -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://example.com/careers",
+    "type": "page",
+    "intent": "Tell me when an investment internship appears",
+    "intervalMinutes": 60,
+    "callbackUrl": "https://platform.example.com/hooks/webdog",
+    "externalUserId": "user_123",
+    "externalRef": "watch_456",
+    "metadata": { "conversationId": "c_789" },
+    "aiTriageEnabled": true
+  }'
+```
+
+- `type` is `page` (content changes, the default), `price` (product price), or `links` (the site's sitemap; the URL's domain is used).
+- `intent` (≤300 characters) labels the watch and steers the AI relevance filter and summaries.
+- `intervalMinutes` is 15–525600 (default 1440).
+- `externalRef` makes creation idempotent: re-sending the same value returns the existing watch (`200`, `"replayed": true`).
+- The first check runs before the response (`"baseline": {"status": "completed"}`). An unreachable page returns `422 baseline_failed`, and a `price` watch on a page with no product returns `422 not_a_product_page`; nothing is kept in either case. Pass `"baseline": false` to skip this and let the worker take the first snapshot.
+- Several watches may target the same URL (for example, different users with different intents). Each keeps its own baseline, so each sees every change since its own last check.
+
+Changes are delivered to `callbackUrl` as the [webhook payload](#notifications) above; `alerts[].targetId` is the watch `id`. Errors always look like `{"error": {"code": "…", "message": "…"}}` (`401 unauthorized`, `404 not_found`, `409 check_in_progress` / `external_ref_conflict`, `422 validation_failed` / `invalid_url` / `invalid_cursor`, `403 monitor_limit_reached`).
+
+---
+
 ## Deployment
 
 ### Railway (one-click-ish)
@@ -261,6 +317,7 @@ Set `BETTER_AUTH_URL` (or `NEXT_PUBLIC_APP_URL`) to your public origin and `BETT
 | `npm run dev` | Start the Next.js dev server |
 | `npm run worker` | Run the scrape/diff worker on the cron schedule |
 | `npm run worker:once` | Single worker pass, then exit (handy for debugging) |
+| `npm run api-keys -- <create\|list\|revoke>` | Manage Watcher API keys |
 | `npm run build` / `npm run start` | Production build / serve |
 | `npm run db:up` / `npm run db:down` | Start / stop local Postgres via Docker Compose |
 | `npm run db:push` | Push the Drizzle schema to the database (local dev) |
@@ -278,6 +335,7 @@ Set `BETTER_AUTH_URL` (or `NEXT_PUBLIC_APP_URL`) to your public origin and `BETT
 src/
   app/                  # Next.js App Router
     api/                # REST routes (websites, targets, alerts, account, auth, cron, health)
+      v1/               # Watcher API for other services (API-key auth)
     dashboard/          # Authenticated app (sites, monitors, alerts, settings)
     onboarding/         # Context.dev key onboarding
     share/[token]/      # Public read-only share pages
@@ -293,6 +351,7 @@ src/
     ai-alert-triage.ts  # LLM relevance filter that holds noisy changes
 scripts/
   worker.ts             # Cron worker entrypoint
+  api-keys.ts           # Create / list / revoke Watcher API keys
 drizzle/                # SQL migrations
 railway/                # Railway template assets & publish checklist
 ```
