@@ -164,6 +164,8 @@ All configuration is environment variables (see `.env.example`). Everything exce
 | `CONTEXT_DEV_API_KEY` | No | Server-managed [Context.dev](https://link.context.dev/webdog) key used for all accounts. Leave blank to let each account save its own key in Settings |
 | `SCRAPE_CRON` | No | Worker schedule, cron syntax (default `*/15 * * * *`) |
 | `SNAPSHOT_RETENTION_DAYS` | No | Delete stored snapshots older than this many days (the newest snapshot per monitored page is always kept as the diff baseline). Blank keeps all history |
+| `WEBHOOK_POLL_SECONDS` | No | How often the worker sends due watch webhooks and retries (default `10`) |
+| `WATCH_ERROR_THRESHOLD` | No | Failed checks in a row before a watch reports `watch.error` (default `3`) |
 
 ### Auth (Better Auth)
 
@@ -234,7 +236,10 @@ Create a key for an existing account (sign up in the dashboard first). The key a
 npm run api-keys -- create --email you@example.com --name "My platform"
 npm run api-keys -- list
 npm run api-keys -- revoke <apiClientId>
+npm run api-keys -- webhook-secret <apiClientId> [--rotate]
 ```
+
+`create` also prints the client's **webhook signing secret** (`whsec_…`), used to verify the webhooks described below; `webhook-secret` shows it again or rotates it. Rotation takes effect immediately.
 
 Send it on every request as `Authorization: Bearer wk_…`.
 
@@ -247,6 +252,9 @@ Send it on every request as `Authorization: Bearer wk_…`.
 | `GET /api/v1/watches/:id` | Get one watch |
 | `PATCH /api/v1/watches/:id` | Update `intent`, `intervalMinutes`, `enabled`, `callbackUrl`, `externalUserId`, `externalRef`, `metadata`, `condition`, `triggerMode`, `aiTriageEnabled`, `aiSummaryEnabled` (send `null` to clear) |
 | `DELETE /api/v1/watches/:id` | Delete a watch (`204`) |
+| `GET /api/v1/watches/:id/deliveries` | Webhook delivery history: status (`pending` / `delivered` / `failed`), attempts, last status code and error. Filter `status`; paging `limit`, `cursor` |
+| `POST /api/v1/deliveries/:id/retry` | Re-send a `failed` delivery with a fresh set of attempts |
+| `POST /api/v1/webhooks/test` | Send one signed `webhook.test` event to `{"url": "…"}` to check your receiver |
 | `POST /api/v1/watches/:id/check` | Check now, ignoring the schedule (`409` if a check of that website is already running) |
 | `GET /api/v1/watches/:id/events` | Detected changes, newest first, including ones the AI filter held back (`suppressed: true`). Paging: `limit`, `cursor`; `includeSuppressed=false` to hide them |
 
@@ -290,7 +298,38 @@ Without a `condition`, every detected change notifies. With one, only changes th
 - When a watch with a condition is created, `baseline.condition` says whether the page **already** satisfies it (for example `"Already below USD 200: currently USD 180."`), so you can tell the user right away.
 - Events and webhook alerts carry `condition: {"status": "matched" | "not_matched" | "error", "reason", "evidence": [...]}`.
 
-Changes are delivered to `callbackUrl` as the [webhook payload](#notifications) above; `alerts[].targetId` is the watch `id`. Errors always look like `{"error": {"code": "…", "message": "…"}}` (`401 unauthorized`, `404 not_found`, `409 check_in_progress` / `external_ref_conflict`, `422 validation_failed` / `invalid_url` / `invalid_cursor` / `intent_required` / `ai_not_configured` / `condition_not_supported`, `403 monitor_limit_reached`).
+#### Webhooks
+
+A watch with a `callbackUrl` receives signed JSON `POST`s:
+
+| Event | Sent when | Body (besides `id`, `type`, `createdAt`, `watch`) |
+|---|---|---|
+| `watch.triggered` | A change is delivered for the watch (its condition matched, or it has none) | `event` (the same object `GET /events` returns, incl. `condition` and evidence), `dashboardUrl` |
+| `watch.error` | Checks have failed `WATCH_ERROR_THRESHOLD` (3) times in a row; once per failure streak | `error: {message, consecutiveFailures, failingSince}` |
+| `watch.recovered` | A watch that reported `watch.error` checks successfully again | `recovery: {failedChecks, failingSince}` |
+
+`watch` is the watch as the API returns it, including your `externalUserId`, `externalRef`, and `metadata`, so you can route the event without a lookup. Held changes (condition not met) are not sent.
+
+Headers: `X-Watcher-Event-Id` (equals the body `id`), `X-Watcher-Event-Type`, `X-Watcher-Attempt`, and `X-Watcher-Signature: t=<unix seconds>,v1=<hex>`, where `v1` is HMAC-SHA256 of `"<t>.<raw body>"` keyed with your webhook secret. Verify it against the raw body and reject stale timestamps:
+
+```ts
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+function verify(header: string, rawBody: string, secret: string): boolean {
+  const parts = Object.fromEntries(header.split(",").map((p) => p.split("=") as [string, string]));
+  const t = Number(parts.t);
+  if (!parts.v1 || Math.abs(Date.now() / 1000 - t) > 300) return false;
+  const expected = createHmac("sha256", secret).update(`${t}.${rawBody}`).digest();
+  const given = Buffer.from(parts.v1, "hex");
+  return given.length === expected.length && timingSafeEqual(expected, given);
+}
+```
+
+Delivery is **at-least-once**: events are written to an outbox in the same transaction as the change and sent immediately. Any non-2xx response, timeout (10s), or network error is retried after 30s, 2m, 10m, 30m, 1h, 3h, 6h, and 12h (±10% jitter). After 9 attempts the delivery is `failed` (retry it with `POST /deliveries/:id/retry`); `410 Gone` fails it at once. Redirects are not followed. The same event keeps the same `X-Watcher-Event-Id` and body on every attempt, so dedupe on it and return 2xx quickly.
+
+> Watches created before signed webhooks were routed through an unsigned `webdog_ai.new_alerts` WEBHOOK destination. The migration moves their `callbackUrl` onto the watch, so they now receive the signed events above instead. Dashboard WEBHOOK destinations are unchanged and still receive the `webdog_ai.new_alerts` payload.
+
+Errors always look like `{"error": {"code": "…", "message": "…"}}` (`401 unauthorized`, `404 not_found`, `409 check_in_progress` / `external_ref_conflict`, `422 validation_failed` / `invalid_url` / `invalid_cursor` / `intent_required` / `ai_not_configured` / `condition_not_supported`, `403 monitor_limit_reached`).
 
 ---
 
@@ -334,7 +373,7 @@ Set `BETTER_AUTH_URL` (or `NEXT_PUBLIC_APP_URL`) to your public origin and `BETT
 | `npm run dev` | Start the Next.js dev server |
 | `npm run worker` | Run the scrape/diff worker on the cron schedule |
 | `npm run worker:once` | Single worker pass, then exit (handy for debugging) |
-| `npm run api-keys -- <create\|list\|revoke>` | Manage Watcher API keys |
+| `npm run api-keys -- <create\|list\|revoke\|webhook-secret>` | Manage Watcher API keys and webhook secrets |
 | `npm run build` / `npm run start` | Production build / serve |
 | `npm run db:up` / `npm run db:down` | Start / stop local Postgres via Docker Compose |
 | `npm run db:push` | Push the Drizzle schema to the database (local dev) |

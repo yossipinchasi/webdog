@@ -16,11 +16,11 @@ import {
   parseDomain,
 } from "./context-client";
 import { newId } from "./ids";
-import type { AlertKind, NotificationChannel, Target } from "./db/schema";
+import type { Alert, AlertKind, NotificationChannel, Target } from "./db/schema";
 import { dispatchNewAlertsForDestinations } from "./dispatch-new-alerts";
 import { resolveDestinationsForTarget } from "./website-notification-destinations";
 import { authPublicBaseUrl } from "./auth";
-import { buildNewAlertsPayload, type NewAlertsAlert } from "./notification-new-alerts";
+import { alertDashboardDeepLink, buildNewAlertsPayload, type NewAlertsAlert } from "./notification-new-alerts";
 import { diffPreview } from "./diff-preview";
 import {
   mergeAlertDetails,
@@ -32,6 +32,9 @@ import { triageAlert } from "./ai-alert-triage";
 import { withWebsiteCheckLock } from "./website-check-lock";
 import { parseStoredCondition, type ConditionOutcome } from "./watch-conditions";
 import { evaluateChangeCondition } from "./watch-condition-eval";
+import { deliverDueWebhooks, enqueueWebhook, watchErrorThreshold } from "./webhook-outbox";
+import { buildErrorEvent, buildRecoveredEvent, buildTriggeredEvent } from "./watcher-events";
+import { toWatchEventJson, toWatchJson } from "./v1/watch-format";
 
 function sha256(s: string): string {
   return createHash("sha256").update(s).digest("hex");
@@ -420,6 +423,10 @@ async function runWebsiteChecksLocked(
   const alerts: AlertInsert[] = [];
   const checkedTargets: Target[] = [];
   let errors = 0;
+  /** Outbox rows created by this run, attempted right away at the end (the worker retries failures). */
+  const newDeliveryIds: string[] = [];
+  const errorThreshold = watchErrorThreshold();
+  const watchJson = (t: Target) => toWatchJson(t, website, t.callbackUrl);
 
   const singleTarget = Boolean(options?.targetId);
 
@@ -442,14 +449,7 @@ async function runWebsiteChecksLocked(
       // Read fresh interval + deadline inside a DB transaction so a concurrent PATCH
       // cannot leave checkIntervalHours and nextCheckDueAt mismatched after we scrape.
       await db.transaction(async (tx) => {
-        const [fresh] = await tx
-          .select({
-            nextCheckDueAt: schema.target.nextCheckDueAt,
-            checkIntervalHours: schema.target.checkIntervalHours,
-          })
-          .from(schema.target)
-          .where(eq(schema.target.id, t.id))
-          .limit(1);
+        const [fresh] = await tx.select().from(schema.target).where(eq(schema.target.id, t.id)).limit(1);
 
         if (!fresh) return;
 
@@ -461,18 +461,36 @@ async function runWebsiteChecksLocked(
 
         const screenshotUrl = t.pageUrl ? cache.screenshot.get(t.pageUrl) : undefined;
 
-        await tx
-          .update(schema.target)
-          .set({
-            lastCheckedAt: new Date(nowMs),
-            nextCheckDueAt,
-            lastError: null,
-            lastErrorAt: null,
-            ...(screenshotUrl
-              ? { lastScreenshotUrl: screenshotUrl, lastScreenshotAt: new Date(nowMs) }
-              : {}),
-          })
-          .where(eq(schema.target.id, t.id));
+        const updates = {
+          lastCheckedAt: new Date(nowMs),
+          nextCheckDueAt,
+          lastError: null,
+          lastErrorAt: null,
+          consecutiveFailures: 0,
+          failingSince: null,
+          ...(screenshotUrl
+            ? { lastScreenshotUrl: screenshotUrl, lastScreenshotAt: new Date(nowMs) }
+            : {}),
+        };
+        await tx.update(schema.target).set(updates).where(eq(schema.target.id, t.id));
+
+        // A watch that had reported `watch.error` is healthy again.
+        if (fresh.callbackUrl && fresh.apiClientId && fresh.consecutiveFailures >= errorThreshold) {
+          newDeliveryIds.push(
+            await enqueueWebhook(tx, {
+              targetId: fresh.id,
+              apiClientId: fresh.apiClientId,
+              url: fresh.callbackUrl,
+              event: buildRecoveredEvent({
+                id: newId("evt"),
+                createdAt: new Date(nowMs),
+                watch: watchJson({ ...fresh, ...updates }),
+                failedChecks: fresh.consecutiveFailures,
+                failingSince: fresh.failingSince,
+              }),
+            }),
+          );
+        }
       });
     } catch (err) {
       errors += 1;
@@ -481,15 +499,38 @@ async function runWebsiteChecksLocked(
       // broken URL doesn't get retried every worker tick.
       const nowMs = Date.now();
       try {
-        await db
-          .update(schema.target)
-          .set({
+        await db.transaction(async (tx) => {
+          const [fresh] = await tx.select().from(schema.target).where(eq(schema.target.id, t.id)).limit(1);
+          if (!fresh) return;
+          const updates = {
             lastCheckedAt: new Date(nowMs),
             lastError: describeCheckError(err),
             lastErrorAt: new Date(nowMs),
-            nextCheckDueAt: computeNextCheckDueAfterSuccess(t.nextCheckDueAt, t.checkIntervalHours, nowMs),
-          })
-          .where(eq(schema.target.id, t.id));
+            nextCheckDueAt: computeNextCheckDueAfterSuccess(fresh.nextCheckDueAt, fresh.checkIntervalHours, nowMs),
+            consecutiveFailures: fresh.consecutiveFailures + 1,
+            failingSince: fresh.failingSince ?? new Date(nowMs),
+          };
+          await tx.update(schema.target).set(updates).where(eq(schema.target.id, t.id));
+
+          // Report once per failure streak, when it reaches the threshold.
+          if (fresh.callbackUrl && fresh.apiClientId && updates.consecutiveFailures === errorThreshold) {
+            newDeliveryIds.push(
+              await enqueueWebhook(tx, {
+                targetId: fresh.id,
+                apiClientId: fresh.apiClientId,
+                url: fresh.callbackUrl,
+                event: buildErrorEvent({
+                  id: newId("evt"),
+                  createdAt: new Date(nowMs),
+                  watch: watchJson({ ...fresh, ...updates }),
+                  message: updates.lastError,
+                  consecutiveFailures: updates.consecutiveFailures,
+                  failingSince: updates.failingSince,
+                }),
+              }),
+            );
+          }
+        });
       } catch (updateErr) {
         console.error(`failed to record error state for target ${t.id}:`, updateErr);
       }
@@ -590,27 +631,64 @@ async function runWebsiteChecksLocked(
       }
     }
 
-    await db.insert(schema.alert).values(
-      alerts.map((a) => ({
-        id: a.id,
-        websiteId: a.websiteId,
-        targetId: a.targetId,
-        kind: a.kind,
-        title: a.title,
-        details: a.details,
-        // Held alerts are recorded for the audit trail but arrive read, so they
-        // stay out of unread counts and the notification pass below.
-        read: Boolean(a.suppressed),
-        suppressed: Boolean(a.suppressed),
-        suppressionReason: a.suppressed ? (a.suppressionReason ?? null) : null,
-        conditionStatus: a.condition?.status ?? null,
-        conditionReason: a.condition?.reason ?? null,
-        conditionEvidence: a.condition ? JSON.stringify(a.condition.evidence) : null,
-        createdAt: a.createdAt,
-      })),
-    );
+    const alertRows: Alert[] = alerts.map((a) => ({
+      id: a.id,
+      websiteId: a.websiteId,
+      targetId: a.targetId,
+      kind: a.kind,
+      title: a.title,
+      details: a.details,
+      // Held alerts are recorded for the audit trail but arrive read, so they
+      // stay out of unread counts and the notification pass below.
+      read: Boolean(a.suppressed),
+      suppressed: Boolean(a.suppressed),
+      suppressionReason: a.suppressed ? (a.suppressionReason ?? null) : null,
+      conditionStatus: a.condition?.status ?? null,
+      conditionReason: a.condition?.reason ?? null,
+      conditionEvidence: a.condition ? JSON.stringify(a.condition.evidence) : null,
+      createdAt: a.createdAt,
+    }));
 
+    // `once` monitors stop after their first confirmed notification. An `error`
+    // outcome was delivered unverified, so it does not use up the trigger.
+    const firedTargetIds = new Set(
+      alerts.filter((a) => !a.suppressed && a.condition?.status !== "error").map((a) => a.targetId),
+    );
     const base = authPublicBaseUrl;
+
+    // Alerts, `once` shutdowns, and their watch webhooks commit together: an alert is
+    // never saved without its outbox row, and vice versa.
+    await db.transaction(async (tx) => {
+      await tx.insert(schema.alert).values(alertRows);
+
+      const triggeredAt = new Date();
+      for (const id of firedTargetIds) {
+        const tgt = targetById.get(id);
+        if (tgt?.triggerMode !== "once") continue;
+        await tx.update(schema.target).set({ enabled: false, triggeredAt }).where(eq(schema.target.id, id));
+        targetById.set(id, { ...tgt, enabled: false, triggeredAt });
+      }
+
+      for (const row of alertRows) {
+        const tgt = targetById.get(row.targetId);
+        if (row.suppressed || !tgt?.callbackUrl || !tgt.apiClientId) continue;
+        newDeliveryIds.push(
+          await enqueueWebhook(tx, {
+            targetId: tgt.id,
+            apiClientId: tgt.apiClientId,
+            url: tgt.callbackUrl,
+            event: buildTriggeredEvent({
+              id: newId("evt"),
+              createdAt: row.createdAt,
+              watch: watchJson(tgt),
+              event: toWatchEventJson(row),
+              dashboardUrl: alertDashboardDeepLink(base, row.id),
+            }),
+          }),
+        );
+      }
+    });
+
     const siteInfo = { id: website.id, name: website.name, domain: website.domain };
 
     const alertsByDestinationId = new Map<string, NewAlertsAlert[]>();
@@ -666,17 +744,15 @@ async function runWebsiteChecksLocked(
       );
     }
 
-    // `once` monitors stop after their first confirmed notification. An `error`
-    // outcome was delivered unverified, so it does not use up the trigger.
-    const firedTargetIds = new Set(
-      alerts.filter((a) => !a.suppressed && a.condition?.status !== "error").map((a) => a.targetId),
-    );
-    for (const id of firedTargetIds) {
-      if (targetById.get(id)?.triggerMode !== "once") continue;
-      await db
-        .update(schema.target)
-        .set({ enabled: false, triggeredAt: new Date() })
-        .where(eq(schema.target.id, id));
+  }
+
+  // First delivery attempt for this run's watch webhooks; failures stay queued and the
+  // worker retries them on the backoff schedule.
+  if (newDeliveryIds.length > 0) {
+    try {
+      await deliverDueWebhooks({ ids: newDeliveryIds });
+    } catch (err) {
+      console.error("immediate webhook delivery failed (will retry):", err);
     }
   }
 

@@ -3,9 +3,11 @@
 //   npm run api-keys -- create --email owner@example.com --name "My platform"
 //   npm run api-keys -- list [--email owner@example.com]
 //   npm run api-keys -- revoke <apiClientId>
+//   npm run api-keys -- webhook-secret <apiClientId> [--rotate]
 // Env: DATABASE_URL.
 
 import "dotenv/config";
+import { randomBytes } from "node:crypto";
 import { and, desc, eq, isNull } from "drizzle-orm";
 import { db } from "../src/lib/db";
 import * as schema from "../src/lib/db/schema";
@@ -34,10 +36,15 @@ async function create(args: string[]) {
   const ownerUserId = await userIdByEmail(email);
   const { key, keyHash, keyPrefix } = generateApiKey();
   const id = newId("akey");
-  await db.insert(schema.apiClient).values({ id, ownerUserId, name, keyPrefix, keyHash, createdAt: new Date() });
+  const [created] = await db
+    .insert(schema.apiClient)
+    .values({ id, ownerUserId, name, keyPrefix, keyHash, createdAt: new Date() })
+    .returning({ webhookSecret: schema.apiClient.webhookSecret });
   console.log(`Created API client ${id} ("${name}") for ${email}.`);
   console.log("\nAPI key (shown once — store it now; only its hash is kept):\n");
   console.log(`  ${key}\n`);
+  console.log("Webhook signing secret (verify X-Watcher-Signature with it; view again with `webhook-secret`):\n");
+  console.log(`  ${created!.webhookSecret}\n`);
 }
 
 async function list(args: string[]) {
@@ -67,12 +74,37 @@ async function revoke(args: string[]) {
   console.log(res.length ? `Revoked ${id}.` : `No active API client ${id}.`);
 }
 
+async function webhookSecret(args: string[]) {
+  const id = args[0];
+  if (!id || id.startsWith("--")) throw new Error("Usage: webhook-secret <apiClientId> [--rotate]");
+  if (args.includes("--rotate")) {
+    const secret = `whsec_${randomBytes(32).toString("hex")}`;
+    const res = await db
+      .update(schema.apiClient)
+      .set({ webhookSecret: secret })
+      .where(eq(schema.apiClient.id, id))
+      .returning({ id: schema.apiClient.id });
+    if (!res.length) throw new Error(`No API client ${id}.`);
+    console.log(`Rotated. New webhook signing secret for ${id} (the old one stops verifying immediately):\n`);
+    console.log(`  ${secret}\n`);
+    return;
+  }
+  const [row] = await db
+    .select({ secret: schema.apiClient.webhookSecret })
+    .from(schema.apiClient)
+    .where(eq(schema.apiClient.id, id))
+    .limit(1);
+  if (!row) throw new Error(`No API client ${id}.`);
+  console.log(row.secret);
+}
+
 async function main() {
   const [command, ...args] = process.argv.slice(2);
   if (command === "create") await create(args);
   else if (command === "list") await list(args);
   else if (command === "revoke") await revoke(args);
-  else throw new Error("Commands: create | list | revoke");
+  else if (command === "webhook-secret") await webhookSecret(args);
+  else throw new Error("Commands: create | list | revoke | webhook-secret");
 }
 
 main().then(

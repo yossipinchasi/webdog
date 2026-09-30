@@ -4,18 +4,44 @@
 //   npm run worker            # long-running
 //   npm run worker:once       # single pass, then exit
 // Env: SCRAPE_CRON (default every 15 min), CONTEXT_DEV_API_KEY, RESEND_API_KEY,
-// RESEND_SEND_FROM_EMAIL, POSTFIX_TO_ALERTS, MAX_ALERTS, SNAPSHOT_RETENTION_DAYS, DATABASE_URL.
+// RESEND_SEND_FROM_EMAIL, POSTFIX_TO_ALERTS, MAX_ALERTS, SNAPSHOT_RETENTION_DAYS,
+// WEBHOOK_POLL_SECONDS (default 10), WATCH_ERROR_THRESHOLD (default 3), DATABASE_URL.
 
 import "dotenv/config";
 import cron from "node-cron";
 import { runAllChecks } from "../src/lib/scraper";
 import { pruneSnapshots, snapshotRetentionDays } from "../src/lib/snapshot-retention";
+import { deliverDueWebhooks } from "../src/lib/webhook-outbox";
 
 /** Pruning scans the snapshot table, so run it at most hourly rather than every tick. */
 const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 
 let running = false;
 let lastPruneAt = 0;
+let delivering = false;
+
+/** Send due watch webhooks (new ones that failed their first attempt, and retries). */
+async function deliverWebhooks() {
+  if (delivering) return;
+  delivering = true;
+  try {
+    const r = await deliverDueWebhooks();
+    if (r.attempted > 0) {
+      console.log(
+        `[worker] webhooks: ${r.attempted} attempted — ${r.delivered} delivered, ${r.retrying} retrying, ${r.failed} failed`,
+      );
+    }
+  } catch (err) {
+    console.error("[worker] webhook delivery failed:", err);
+  } finally {
+    delivering = false;
+  }
+}
+
+function webhookPollMs(): number {
+  const s = Number(process.env.WEBHOOK_POLL_SECONDS);
+  return Number.isFinite(s) && s >= 1 ? s * 1000 : 10_000;
+}
 
 async function pruneIfDue() {
   const days = snapshotRetentionDays();
@@ -57,6 +83,7 @@ async function main() {
   const once = process.argv.includes("--once");
   if (once) {
     await runOnce();
+    await deliverWebhooks();
     process.exit(0);
   }
 
@@ -70,6 +97,8 @@ async function main() {
   cron.schedule(expr, () => {
     void runOnce();
   });
+  // Retries need finer timing than the scrape schedule (the first retry is after 30s).
+  setInterval(() => void deliverWebhooks(), webhookPollMs());
 
   // Run once immediately so the first tick isn't a long wait.
   await runOnce();

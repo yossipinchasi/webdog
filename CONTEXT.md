@@ -15,3 +15,4 @@ This file names the core concepts used by webdog.ai so future architecture work 
 - **Watch** — a monitor created and managed through the Watcher API (`/api/v1`). It can carry the caller's own end-user id, reference, and metadata, and several watches may target the same page, each with its own baseline.
 - **API Client** — a machine credential (API key) for the Watcher API. It acts as the account it was created for.
 - **Condition** — an optional rule on a monitor that a detected change must satisfy before it notifies: an AI intent match against the monitor's note, or a deterministic price threshold crossing. Changes that fail it are kept as held alerts.
+- **Webhook Delivery** — one signed `watch.*` event queued for a watch's callback URL. It is written together with the change that caused it and retried with backoff until delivered or failed.
