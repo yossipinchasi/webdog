@@ -115,13 +115,13 @@ Each monitor has its own check interval (fractional hours supported — `0.25` =
 3. The new snapshot is diffed against the previous one. Changes become alerts.
 4. Alerts are stored in the dashboard and dispatched to the monitor's notification destinations, optionally with an AI-generated summary and the page screenshot.
 
-The Next.js app serves the dashboard, auth, and API routes; the worker runs alongside it (a second process locally, one container on Railway).
+The Next.js app serves the dashboard, auth, and API routes; the worker runs alongside it (a second process locally, a separate service on Railway).
 
 ---
 
 ## Quick start
 
-**Prerequisites:** Node.js ≥ 20.9, Docker (for local PostgreSQL), and a free [Context.dev API key](https://link.context.dev/webdog).
+**Prerequisites:** Node.js 22 (≥ 22.6), Docker (for local PostgreSQL), and a free [Context.dev API key](https://link.context.dev/webdog).
 
 ```bash
 # 1. Clone
@@ -335,34 +335,61 @@ Errors always look like `{"error": {"code": "…", "message": "…"}}` (`401 una
 
 ## Deployment
 
-### Railway (one-click-ish)
+### Railway
 
-The repo ships with a [`railway.json`](./railway.json) that builds the app, runs migrations, and starts the worker and web server in one service:
+Production runs on Railway as three resources, defined in code in [`.railway/railway.ts`](./.railway/railway.ts) (Railway Infrastructure as Code):
 
+| Resource | Runs | Notes |
+|---|---|---|
+| `postgres` | Railway PostgreSQL | Private networking only |
+| `web` | `npm run build` → pre-deploy `npm run db:migrate:deploy` → `npm run start` | Public HTTPS domain; health check `/api/health` (verifies Postgres); restarts on failure |
+| `worker` | no build step → pre-deploy `npm run db:migrate:deploy` → `npm run worker` | No domain; always restarted; runs scheduled checks and webhook delivery/retries. Keep exactly **one** replica |
+
+Both services run `npm run db:migrate:deploy` ([`scripts/migrate.ts`](./scripts/migrate.ts)) before starting. It applies pending migrations while holding a Postgres advisory lock, so the two services never migrate at the same time and neither starts new code against an old schema. Pending migrations apply in one transaction: if one fails, the database is left unchanged and the deploy stops before the new code starts.
+
+**Deploys are manual.** The services have no GitHub source, so pushing or merging never deploys. To release a commit:
+
+```bash
+railway link                                   # once: select the Webdog project
+git worktree add ../webdog-release <commit>    # a clean checkout of exactly what you ship
+cd ../webdog-release
+railway up --service web --ci -m "release <commit>"
+railway up --service worker --ci -m "release <commit>"
+cd - && git worktree remove ../webdog-release
 ```
-npm run db:migrate → npm run worker (background) → next start
-```
 
-1. Create a Railway project with a **PostgreSQL** service and a service from this repo.
-2. Wire `DATABASE_URL` from the Postgres service, set `CONTEXT_DEV_API_KEY` and `BETTER_AUTH_SECRET`.
-3. Enable public networking — auth URLs derive from `RAILWAY_PUBLIC_DOMAIN` automatically.
-4. Health check is served at `/api/health` (readiness-style, verifies Postgres).
+Before a release that includes migrations, take a backup (`railway connect postgres`, then `pg_dump`). To roll back code, redeploy the previous deployment in the Railway dashboard. Old code tolerates columns added by later migrations, but data migrations (such as `0006`, which moves API watch callbacks) are not undone by a code rollback.
 
-Publishing it as a Railway template? Follow the checklist in [`railway/template-publish.md`](./railway/template-publish.md).
+**First-time setup**
+
+1. Create an empty Railway project and `railway link` it.
+2. `railway config plan` to review what `.railway/railway.ts` will create, then `railway config apply`.
+3. In the Railway dashboard, set the secret variables on **both** `web` and `worker` (they are declared with `preserve()`, so applies never overwrite or print them): `BETTER_AUTH_SECRET` (generate locally with `openssl rand -base64 32`) and `CONTEXT_DEV_API_KEY`; optionally `OPENAI_API_KEY` or `AI_GATEWAY_API_KEY`, `AI_MODEL`, `RESEND_API_KEY`, `RESEND_SEND_FROM_EMAIL`.
+4. Generate a public domain for `web` (`railway domain --service web`). The worker's `BETTER_AUTH_URL` references it; the worker cannot start without a public URL.
+5. Release as above. The first deploy applies every migration to the empty database.
+
+Notes:
+
+- `.railway/railway.ts` describes the whole project: `railway config apply` can remove resources and variables it does not declare. Change settings such as `SNAPSHOT_RETENTION_DAYS` there, not in the dashboard, and don't run `apply` while temporary services you created by hand still exist.
+- For a custom domain, add it to `web` in Railway, then set `BETTER_AUTH_URL=https://your-domain` for **both** services in `.railway/railway.ts`.
+- Monitoring: Railway logs per service (`railway logs --service worker`). The worker logs every scrape run and every webhook batch. The `web` health check covers the web app only; automated worker-health monitoring (e.g. a heartbeat exposed through `/api/health`) is a planned hardening item.
+- `.railway/railway.ts` is type-checked (`npm run typecheck`) and covered by `src/lib/railway-config.test.ts`; `railway config plan` needs a linked project.
+
+Publishing it as a Railway template? See [`railway/template-publish.md`](./railway/template-publish.md).
 
 ### Anywhere else
 
-webdog is a plain Next.js app plus a Node worker — any host that runs Node 20+ and reaches a PostgreSQL database works:
+webdog is a plain Next.js app plus a Node worker. Any host that runs Node 22 and reaches a PostgreSQL database works:
 
 ```bash
 npm ci
 npm run build
-npm run db:migrate
-npm run worker &      # long-running process
-npm run start         # next start
+npm run db:migrate:deploy   # safe to run from several processes at once
+npm run worker &            # long-running process
+npm run start               # next start
 ```
 
-Set `BETTER_AUTH_URL` (or `NEXT_PUBLIC_APP_URL`) to your public origin and `BETTER_AUTH_SECRET` to a random value.
+Set `BETTER_AUTH_URL` (or `NEXT_PUBLIC_APP_URL`) to your public origin and `BETTER_AUTH_SECRET` to a random value, for both the web process and the worker.
 
 ---
 
@@ -377,7 +404,8 @@ Set `BETTER_AUTH_URL` (or `NEXT_PUBLIC_APP_URL`) to your public origin and `BETT
 | `npm run build` / `npm run start` | Production build / serve |
 | `npm run db:up` / `npm run db:down` | Start / stop local Postgres via Docker Compose |
 | `npm run db:push` | Push the Drizzle schema to the database (local dev) |
-| `npm run db:migrate` | Apply SQL migrations from `drizzle/` (production) |
+| `npm run db:migrate` | Apply SQL migrations from `drizzle/` |
+| `npm run db:migrate:deploy` | Apply migrations under an advisory lock (production pre-deploy; safe to run concurrently) |
 | `npm run db:generate` | Generate a new migration from schema changes |
 | `npm run db:check` | Verify the database is reachable |
 | `npm run db:reset` | Drop and recreate the schema (destructive) |
@@ -407,8 +435,10 @@ src/
     ai-alert-triage.ts  # LLM relevance filter that holds noisy changes
 scripts/
   worker.ts             # Cron worker entrypoint
+  migrate.ts            # Lock-protected production migrations
   api-keys.ts           # Create / list / revoke Watcher API keys
 drizzle/                # SQL migrations
+.railway/railway.ts     # Railway Infrastructure as Code (postgres, web, worker)
 railway/                # Railway template assets & publish checklist
 ```
 

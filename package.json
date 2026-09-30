@@ -5,7 +5,7 @@
   "private": true,
   "description": "Open-source website change monitoring — scrape, diff, notify.",
   "engines": {
-    "node": ">=20.9"
+    "node": "22.x"
   },
   "scripts": {
     "dev": "next dev",
@@ -20,10 +20,11 @@
     "db:down": "docker compose down",
     "db:check": "tsx scripts/check-db.ts",
     "db:migrate": "drizzle-kit migrate",
+    "db:migrate:deploy": "tsx scripts/migrate.ts",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
     "db:reset": "tsx scripts/reset-db.ts && drizzle-kit push",
-    "lint": "eslint src scripts drizzle.config.ts next.config.ts tailwind.config.ts eslint.config.mjs"
+    "lint": "eslint src scripts .railway drizzle.config.ts next.config.ts tailwind.config.ts eslint.config.mjs"
   },
   "dependencies": {
     "@ai-sdk/gateway": "^3.0.121",
@@ -51,6 +52,7 @@
     "eslint": "^9.39.4",
     "eslint-config-next": "^15.5.18",
     "postcss": "^8.5.0",
+    "railway": "3.12.0",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.3"
   },

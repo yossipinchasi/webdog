@@ -2,29 +2,32 @@
 
 Use this when converting the repo into a published template in the [template composer](https://docs.railway.com/templates/create). It mirrors [Template best practices](https://docs.railway.com/templates/best-practices).
 
+The production layout (PostgreSQL + `web` + `worker`) is defined in [`.railway/railway.ts`](../.railway/railway.ts); keep the template consistent with it.
+
 ## Icons (template + service)
 
-- Upload **`railway/icon.svg`** (or export it as PNG) for both the **template** and **webdog.ai** service.
+- Upload **`railway/icon.svg`** (or export it as PNG) for the **template** and both services.
 - Prefer **1:1** aspect ratio; this asset is square **24×24** viewBox (scale up as needed).
 
 ## Naming
 
 - **Template name:** **webdog.ai** (matches product naming).
-- **Service name:** **webdog.ai** (single service).
+- **Service names:** **web** (dashboard + API) and **worker** (scheduled checks and webhook delivery).
 
 ## Private networking
 
-- This stack is one app service plus a **PostgreSQL** service. Use **public HTTP** for the app only; keep database traffic internal/private when Railway wiring allows it.
+- This stack is two app services (**web**, **worker**) plus a **PostgreSQL** service. Only **web** gets a public domain; keep database traffic internal/private.
 - Do **not** point Better Auth or browser-facing URLs at **`RAILWAY_PRIVATE_DOMAIN`** — it is internal-only. See README **Deploy on Railway**.
 
 ## Database
 
 - Add a Railway **PostgreSQL** service.
-- Wire the app service **`DATABASE_URL`** to the PostgreSQL connection string.
+- Wire **`DATABASE_URL`** on both services to the PostgreSQL connection string.
+- Both services run **`npm run db:migrate:deploy`** as their pre-deploy command (lock-protected, safe to run from both).
 
 ## Health checks
 
-- **Healthcheck path:** **`/api/health`**
+- **Healthcheck path (web only):** **`/api/health`**. The worker has no HTTP endpoint; restart policy **Always**.
 - **Timeout:** **`300`** seconds (adjust if your builds are slower).
 - Endpoint verifies PostgreSQL is reachable (readiness-style check).
 
@@ -47,13 +50,14 @@ Set descriptions in the Railway UI exactly as below so deployers know what to en
 | **`POSTFIX_TO_ALERTS`** | No | Optional text appended to new alert titles and outbound email subjects. |
 | **`DATABASE_URL`** | Yes | PostgreSQL connection string. Wire this from the Railway PostgreSQL service. |
 | **`BETTER_AUTH_SECRET`** | Yes | Secret for Better Auth cookie/session crypto. Set **`${{secret(...)}}`** as above. |
-| **`BETTER_AUTH_URL`** | No | Full public **`https://…`** origin for auth callbacks. Omit so the app uses Railway’s public hostname (**`RAILWAY_PUBLIC_DOMAIN`**) automatically when public networking sets it. |
+| **`BETTER_AUTH_URL`** | Worker: yes | Full public **`https://…`** origin. On **web**, omit it to use Railway’s public hostname (**`RAILWAY_PUBLIC_DOMAIN`**). On **worker**, set it to **`https://${{web.RAILWAY_PUBLIC_DOMAIN}}`**: the worker has no domain and fails to start without a public URL. |
 | **`NEXT_PUBLIC_APP_URL`** | No | Same origin as **`https://…`** for the Next.js client bundle when **`RAILWAY_PUBLIC_DOMAIN`** is missing or must be overridden. |
 | **`BETTER_AUTH_ALLOWED_HOSTS`** | No | Comma-separated host patterns (wildcards ok, e.g. **`*.up.railway.app`**) when users may hit multiple public hostnames. |
 | **`BETTER_AUTH_TRUSTED_ORIGINS`** | No | Extra allowed origins for Better Auth (comma-separated full origins). |
-| **`SCRAPE_CRON`** | No | Cron expression for the in-container worker (default **`*/15 * * * *`**). |
+| **`SCRAPE_CRON`** | No | Cron expression for the worker service (default **`*/15 * * * *`**). |
+| **`NODE_ENV`** | Yes | **`production`** on both services. |
 
-Reference **`DATABASE_URL`** from the PostgreSQL service into the app service.
+Reference **`DATABASE_URL`** from the PostgreSQL service into both app services. Set the auth and provider variables on both.
 
 ## Workspace naming
 
@@ -68,7 +72,7 @@ webdog.ai is open-source website change monitoring: scrape pages, compare versio
 
 ## About Hosting webdog.ai
 
-You deploy one Railway app service from this repository and one PostgreSQL service for storage. The platform builds the Next.js app, runs database migrations against PostgreSQL, starts a background worker for scheduled scrapes, and serves the UI over HTTPS. You supply a context.dev API key for scraping; Better Auth defaults to Railway’s public domain when **`BETTER_AUTH_URL`** is left unset.
+You deploy two Railway services from this repository (the web app and a background worker) and one PostgreSQL service for storage. Database migrations run before either service starts; the web app serves the UI over HTTPS and the worker runs scheduled scrapes and webhook delivery. You supply a context.dev API key for scraping; Better Auth defaults to Railway’s public domain when **`BETTER_AUTH_URL`** is left unset.
 
 ## Common Use Cases
 
