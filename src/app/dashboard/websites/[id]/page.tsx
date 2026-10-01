@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { and, asc, desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import * as schema from "@/lib/db/schema";
+import { publicTarget } from "@/lib/target-public";
 import { requireUser } from "@/lib/session";
 import { AddTargetDialog } from "@/components/add-target-dialog";
 import { websiteOwnerAccessible } from "@/lib/account-access";
@@ -182,7 +183,7 @@ export default async function WebsiteDetailPage({
             {targets.map((t) => (
               <MonitorCard
                 key={t.id}
-                target={t}
+                target={publicTarget(t)}
                 websiteId={website.id}
                 websiteUrl={website.url}
                 destinations={notificationDestChoices}

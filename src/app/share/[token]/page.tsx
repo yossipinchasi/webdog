@@ -4,6 +4,7 @@ import type { Metadata } from "next";
 import { desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import * as schema from "@/lib/db/schema";
+import { sharedTarget } from "@/lib/target-public";
 import { PublicMonitorCard } from "@/components/public-monitor-card";
 import { WebsiteStatusChip } from "@/components/website-status-chip";
 import { ExpandableText } from "@/components/expandable-text";
@@ -161,7 +162,7 @@ export default async function PublicSharePage({
               {targets.map((t) => (
                 <PublicMonitorCard
                   key={t.id}
-                  target={t}
+                  target={sharedTarget(t)}
                   websiteUrl={website.url}
                   changes={changesByTarget.get(t.id) ?? []}
                   currentContent={latestContentForTarget(t, recentSnapshots)}

@@ -34,7 +34,7 @@ import { parseStoredCondition, type ConditionOutcome } from "./watch-conditions"
 import { evaluateChangeCondition } from "./watch-condition-eval";
 import { deliverDueWebhooks, enqueueWebhook, watchErrorThreshold } from "./webhook-outbox";
 import { buildErrorEvent, buildRecoveredEvent, buildTriggeredEvent } from "./watcher-events";
-import { toWatchEventJson, toWatchJson } from "./v1/watch-format";
+import { toWatchEventJson, toWebhookWatchJson } from "./v1/watch-format";
 
 function sha256(s: string): string {
   return createHash("sha256").update(s).digest("hex");
@@ -426,7 +426,8 @@ async function runWebsiteChecksLocked(
   /** Outbox rows created by this run, attempted right away at the end (the worker retries failures). */
   const newDeliveryIds: string[] = [];
   const errorThreshold = watchErrorThreshold();
-  const watchJson = (t: Target) => toWatchJson(t, website, t.callbackUrl);
+  // Webhook payloads omit the callback URL: it is a credential and the receiver already knows it.
+  const watchJson = (t: Target) => toWebhookWatchJson(t, website);
 
   const singleTarget = Boolean(options?.targetId);
 

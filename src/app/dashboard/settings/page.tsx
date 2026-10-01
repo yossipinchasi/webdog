@@ -20,6 +20,7 @@ import {
   isVercelAiGatewayApiKeyManagedByEnv,
 } from "@/lib/server-managed-config";
 import { publicNotificationDestinations } from "@/lib/notification-destination-public";
+import { maskSecret } from "@/lib/secret-mask";
 
 export default async function SettingsPage() {
   const user = await requireUser();
@@ -79,7 +80,7 @@ export default async function SettingsPage() {
         </h2>
         <div className="mt-3">
           <NotificationChannelsSettings
-            initialResendApiKey={resendApiKeyManaged ? null : row?.resendApiKey ?? null}
+            initialResendApiKey={resendApiKeyManaged ? null : maskSecret(row?.resendApiKey)}
             initialDestinations={clientDestinations}
             resendApiKeyManaged={resendApiKeyManaged}
             resendSendFromEmailManaged={resendSendFromEmailManaged}
@@ -88,11 +89,11 @@ export default async function SettingsPage() {
       </section>
 
       <SystemServicesSettings
-        initialContextDevApiKey={contextDevApiKeyManaged ? null : row?.contextDevApiKey ?? null}
+        initialContextDevApiKey={contextDevApiKeyManaged ? null : maskSecret(row?.contextDevApiKey)}
         contextDevApiKeyManaged={contextDevApiKeyManaged}
-        initialOpenaiApiKey={isOpenAiApiKeyManagedByEnv() ? null : row?.openaiApiKey ?? null}
+        initialOpenaiApiKey={isOpenAiApiKeyManagedByEnv() ? null : maskSecret(row?.openaiApiKey)}
         initialVercelAiGatewayApiKey={
-          isVercelAiGatewayApiKeyManagedByEnv() ? null : row?.vercelAiGatewayApiKey ?? null
+          isVercelAiGatewayApiKeyManagedByEnv() ? null : maskSecret(row?.vercelAiGatewayApiKey)
         }
         initialAiProvider={row?.aiProvider ?? null}
         initialAiModel={isAiModelManagedByEnv() ? null : row?.aiModel ?? null}

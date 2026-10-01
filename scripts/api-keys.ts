@@ -14,6 +14,10 @@ import * as schema from "../src/lib/db/schema";
 import { newId } from "../src/lib/ids";
 import { generateApiKey } from "../src/lib/api-keys";
 
+function newWebhookSecret(): string {
+  return `whsec_${randomBytes(32).toString("hex")}`;
+}
+
 function flag(args: string[], name: string): string | undefined {
   const i = args.indexOf(`--${name}`);
   return i >= 0 ? args[i + 1] : undefined;
@@ -36,9 +40,10 @@ async function create(args: string[]) {
   const ownerUserId = await userIdByEmail(email);
   const { key, keyHash, keyPrefix } = generateApiKey();
   const id = newId("akey");
+  // Stored encrypted (see schema `encryptedText`); shown once here and via `webhook-secret`.
   const [created] = await db
     .insert(schema.apiClient)
-    .values({ id, ownerUserId, name, keyPrefix, keyHash, createdAt: new Date() })
+    .values({ id, ownerUserId, name, keyPrefix, keyHash, webhookSecret: newWebhookSecret(), createdAt: new Date() })
     .returning({ webhookSecret: schema.apiClient.webhookSecret });
   console.log(`Created API client ${id} ("${name}") for ${email}.`);
   console.log("\nAPI key (shown once — store it now; only its hash is kept):\n");
@@ -78,7 +83,7 @@ async function webhookSecret(args: string[]) {
   const id = args[0];
   if (!id || id.startsWith("--")) throw new Error("Usage: webhook-secret <apiClientId> [--rotate]");
   if (args.includes("--rotate")) {
-    const secret = `whsec_${randomBytes(32).toString("hex")}`;
+    const secret = newWebhookSecret();
     const res = await db
       .update(schema.apiClient)
       .set({ webhookSecret: secret })

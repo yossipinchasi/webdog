@@ -10,6 +10,7 @@ import { normalizeResendToEmailsForStorage } from "@/lib/notify-resend";
 import { isValidSlackIncomingWebhookUrl } from "@/lib/notify-slack";
 import { isResendSendFromEmailManagedByEnv } from "@/lib/server-managed-config";
 import { publicNotificationDestination } from "@/lib/notification-destination-public";
+import { isMaskedValue } from "@/lib/secret-mask";
 import {
   parseWebsiteNotificationDestinationIds,
   stringifyWebsiteNotificationDestinationIds,
@@ -81,7 +82,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     if (body.resendFromEmail !== undefined || body.resendToEmails !== undefined || body.alertWebhookUrl !== undefined) {
       return badRequest("Only name and slackWebhookUrl allowed for Slack destinations");
     }
-    if (body.slackWebhookUrl !== undefined) {
+    // A masked URL is the dashboard's copy of the stored one: keep it.
+    if (body.slackWebhookUrl !== undefined && !isMaskedValue(body.slackWebhookUrl)) {
       if (body.slackWebhookUrl === null) {
         slackWebhookUrl = null;
       } else {
@@ -124,7 +126,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     if (body.slackWebhookUrl !== undefined || body.resendFromEmail !== undefined || body.resendToEmails !== undefined) {
       return badRequest("Only name and alertWebhookUrl allowed for webhook destinations");
     }
-    if (body.alertWebhookUrl !== undefined) {
+    if (body.alertWebhookUrl !== undefined && !isMaskedValue(body.alertWebhookUrl)) {
       if (body.alertWebhookUrl === null) {
         alertWebhookUrl = null;
       } else {

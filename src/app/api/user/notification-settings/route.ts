@@ -23,6 +23,12 @@ import {
   isResendSendFromEmailManagedByEnv,
   isVercelAiGatewayApiKeyManagedByEnv,
 } from "@/lib/server-managed-config";
+import { isMaskedValue, maskSecret } from "@/lib/secret-mask";
+
+/** The dashboard receives masked keys; a masked value sent back unchanged means "keep". */
+function unchangedIfMasked<T>(value: T): T | undefined {
+  return typeof value === "string" && isMaskedValue(value) ? undefined : value;
+}
 
 const patchSchema = z.object({
   contextDevApiKey: z.union([z.string(), z.null()]).optional(),
@@ -82,8 +88,8 @@ function aiSettingsResponse(row: SettingsRow | null) {
 
   return {
     aiProvider: row?.aiProvider ?? null,
-    openaiApiKey: openaiApiKeyManaged ? null : (row?.openaiApiKey ?? null),
-    vercelAiGatewayApiKey: vercelAiGatewayApiKeyManaged ? null : (row?.vercelAiGatewayApiKey ?? null),
+    openaiApiKey: openaiApiKeyManaged ? null : maskSecret(row?.openaiApiKey),
+    vercelAiGatewayApiKey: vercelAiGatewayApiKeyManaged ? null : maskSecret(row?.vercelAiGatewayApiKey),
     aiModel: aiModelManaged ? null : (row?.aiModel ?? null),
     openaiApiKeyManaged,
     vercelAiGatewayApiKeyManaged,
@@ -129,8 +135,8 @@ export async function GET() {
   }
 
   return NextResponse.json({
-    contextDevApiKey: contextDevApiKeyManaged ? null : contextDevApiKey,
-    resendApiKey: resendApiKeyManaged ? null : resendApiKey,
+    contextDevApiKey: contextDevApiKeyManaged ? null : maskSecret(contextDevApiKey),
+    resendApiKey: resendApiKeyManaged ? null : maskSecret(resendApiKey),
     contextDevApiKeyManaged,
     resendApiKeyManaged,
     resendSendFromEmailManaged: isResendSendFromEmailManagedByEnv(),
@@ -145,23 +151,16 @@ export async function PATCH(req: Request) {
   const parsed = await parseJson(req, patchSchema);
   if (parsed.response) return parsed.response;
 
-  const {
-    contextDevApiKey: keyIn,
-    resendApiKey: resendIn,
-    aiProvider: aiProviderIn,
-    openaiApiKey: openaiKeyIn,
-    vercelAiGatewayApiKey: gatewayKeyIn,
-    aiModel: aiModelIn,
-  } = parsed.data;
+  const raw = parsed.data;
+  const keyIn = unchangedIfMasked(raw.contextDevApiKey);
+  const resendIn = unchangedIfMasked(raw.resendApiKey);
+  const aiProviderIn = raw.aiProvider;
+  const openaiKeyIn = unchangedIfMasked(raw.openaiApiKey);
+  const gatewayKeyIn = unchangedIfMasked(raw.vercelAiGatewayApiKey);
+  const aiModelIn = raw.aiModel;
 
-  if (
-    keyIn === undefined &&
-    resendIn === undefined &&
-    aiProviderIn === undefined &&
-    openaiKeyIn === undefined &&
-    gatewayKeyIn === undefined &&
-    aiModelIn === undefined
-  ) {
+  // Checked on the raw body: a save whose keys were all sent back masked is a valid no-op.
+  if (Object.values(raw).every((v) => v === undefined)) {
     return badRequest(
       "Provide at least one of contextDevApiKey, resendApiKey, aiProvider, openaiApiKey, vercelAiGatewayApiKey, or aiModel",
     );
@@ -309,8 +308,8 @@ export async function PATCH(req: Request) {
 
   return NextResponse.json({
     ok: true,
-    contextDevApiKey: contextDevApiKeyManaged ? null : contextKey,
-    resendApiKey: resendApiKeyManaged ? null : resendKey,
+    contextDevApiKey: contextDevApiKeyManaged ? null : maskSecret(contextKey),
+    resendApiKey: resendApiKeyManaged ? null : maskSecret(resendKey),
     contextDevApiKeyManaged,
     resendApiKeyManaged,
     resendSendFromEmailManaged: isResendSendFromEmailManagedByEnv(),

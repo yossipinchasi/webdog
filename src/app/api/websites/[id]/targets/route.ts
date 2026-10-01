@@ -3,6 +3,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import * as schema from "@/lib/db/schema";
+import { publicTarget } from "@/lib/target-public";
 import { notFound, parseJson, badRequest, requireApiUserWithWriteOwner } from "@/lib/api";
 import { websiteOwnerAccessible } from "@/lib/account-access";
 import { newId } from "@/lib/ids";
@@ -143,7 +144,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const [row] = await db.select().from(schema.target).where(eq(schema.target.id, targetId)).limit(1);
     if (row) created.push(row);
 
-    return NextResponse.json({ targets: created }, { status: 201 });
+    return NextResponse.json({ targets: created.map(publicTarget) }, { status: 201 });
   }
 
   const kind =
@@ -181,5 +182,5 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   });
 
   const [row] = await db.select().from(schema.target).where(eq(schema.target.id, targetId)).limit(1);
-  return NextResponse.json({ targets: row ? [row] : [] }, { status: 201 });
+  return NextResponse.json({ targets: row ? [publicTarget(row)] : [] }, { status: 201 });
 }

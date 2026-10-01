@@ -5,13 +5,15 @@
 //   npm run worker:once       # single pass, then exit
 // Env: SCRAPE_CRON (default every 15 min), CONTEXT_DEV_API_KEY, RESEND_API_KEY,
 // RESEND_SEND_FROM_EMAIL, POSTFIX_TO_ALERTS, MAX_ALERTS, SNAPSHOT_RETENTION_DAYS,
-// WEBHOOK_POLL_SECONDS (default 10), WATCH_ERROR_THRESHOLD (default 3), DATABASE_URL.
+// WEBHOOK_POLL_SECONDS (default 10), WATCH_ERROR_THRESHOLD (default 3), DATABASE_URL,
+// DATA_ENCRYPTION_KEY (required in production).
 
 import "dotenv/config";
 import cron from "node-cron";
 import { runAllChecks } from "../src/lib/scraper";
 import { pruneSnapshots, snapshotRetentionDays } from "../src/lib/snapshot-retention";
 import { deliverDueWebhooks } from "../src/lib/webhook-outbox";
+import { currentKeyId } from "../src/lib/secret-box";
 
 /** Pruning scans the snapshot table, so run it at most hourly rather than every tick. */
 const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
@@ -80,6 +82,8 @@ async function runOnce() {
 }
 
 async function main() {
+  // Fail at startup on a missing or malformed DATA_ENCRYPTION_KEY, not on the first credential read.
+  currentKeyId();
   const once = process.argv.includes("--once");
   if (once) {
     await runOnce();

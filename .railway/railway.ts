@@ -27,6 +27,8 @@ export default defineRailway(() => {
     NODE_ENV: "production",
     // Required secrets (set in the dashboard).
     BETTER_AUTH_SECRET: preserve(),
+    // Encrypts stored credentials at rest (openssl rand -base64 32). Same value on both services.
+    DATA_ENCRYPTION_KEY: preserve(),
     CONTEXT_DEV_API_KEY: preserve(),
     // Optional provider settings (set in the dashboard when used).
     OPENAI_API_KEY: preserve(),

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Alert, Target } from "./db/schema";
+import { MASK } from "./secret-mask";
 import {
   createWatchSchema,
   decodeCursor,
@@ -9,6 +10,7 @@ import {
   toWatchEventJson,
   toWatchJson,
   toWebhookDeliveryJson,
+  toWebhookWatchJson,
   updateWatchSchema,
   watchStatus,
 } from "./v1/watch-format";
@@ -124,7 +126,7 @@ test("watch JSON: maps a target to the public shape", () => {
     status: "active",
     enabled: true,
     intervalMinutes: 15,
-    callbackUrl: "https://platform.test/hook",
+    callbackUrl: "https://platform.test/hook/",
     externalUserId: "user-42",
     externalRef: "watch-7",
     metadata: { chatId: "c1" },
@@ -258,4 +260,18 @@ test("delivery JSON: next attempt only while pending", () => {
   const done = toWebhookDeliveryJson({ ...base, status: "delivered", deliveredAt: new Date("2026-10-01T00:02:01Z") });
   assert.deepEqual([done.nextAttemptAt, done.deliveredAt], [null, "2026-10-01T00:02:01.000Z"]);
   assert.ok(!("payload" in done), "payload not echoed back");
+  assert.equal(done.url, "https://platform.test/hook/", "delivery URL is masked");
+});
+
+test("callback URLs are masked in API output, omitted from webhook payloads, and never accepted masked", () => {
+  const t = target({ callbackUrl: "https://platform.test/hooks/webdog?token=supersecret1234" });
+  const w = toWatchJson(t, { id: "web_1", url: "https://x.test" }, t.callbackUrl);
+  assert.equal(w.callbackUrl, `https://platform.test/hooks/${MASK}1234`);
+  assert.ok(!JSON.stringify(w).includes("supersecret"));
+  const hook = toWebhookWatchJson(t, { id: "web_1", url: "https://x.test" });
+  assert.ok(!("callbackUrl" in hook), "payload has no callback URL");
+  assert.equal(hook.id, t.id);
+  const masked = createWatchSchema.safeParse({ url: "https://x.test", callbackUrl: w.callbackUrl });
+  assert.equal(masked.success, false, "a masked callback URL is rejected on create");
+  assert.equal(updateWatchSchema.safeParse({ callbackUrl: w.callbackUrl }).success, false, "and on update");
 });

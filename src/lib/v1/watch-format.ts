@@ -8,6 +8,7 @@ import { z } from "zod";
 import type { Alert, AlertKind, Target, TargetKind, WebhookDelivery, Website } from "../db/schema";
 import { isValidAlertWebhookUrl } from "../notify-outbound-webhook";
 import { conditionSchema, parseStoredCondition, type ConditionStatus, type WatchCondition } from "../watch-conditions";
+import { isMaskedValue, maskUrl } from "../secret-mask";
 
 export type WatchType = "page" | "price" | "links";
 
@@ -32,6 +33,8 @@ const httpUrl = z
   .trim()
   .max(2048)
   .refine((s) => isValidAlertWebhookUrl(s), "Must be an absolute http(s) URL");
+/** Callback URLs come back masked in responses; a masked value must never be saved as the target. */
+const callbackUrl = httpUrl.refine((s) => !isMaskedValue(s), "Send the full callback URL; responses only show a masked form.");
 const intervalMinutes = z.number().int().min(MIN_INTERVAL_MINUTES).max(MAX_INTERVAL_MINUTES);
 const externalId = z.string().trim().min(1).max(200);
 const intent = z.string().trim().max(300);
@@ -49,8 +52,8 @@ export const createWatchSchema = z
     /** What the user wants to know about; labels the watch and steers AI triage/summaries. */
     intent: intent.optional(),
     intervalMinutes: intervalMinutes.default(1440),
-    /** Receives the alert webhook (JSON POST) for this watch's changes. */
-    callbackUrl: httpUrl.optional(),
+    /** Receives the signed watch events (JSON POST). */
+    callbackUrl: callbackUrl.optional(),
     externalUserId: externalId.optional(),
     /** Caller's id for this watch. Re-creating with the same value returns the existing watch. */
     externalRef: externalId.optional(),
@@ -72,7 +75,7 @@ export const updateWatchSchema = z
     intent: intent.nullable().optional(),
     intervalMinutes: intervalMinutes.optional(),
     enabled: z.boolean().optional(),
-    callbackUrl: httpUrl.nullable().optional(),
+    callbackUrl: callbackUrl.nullable().optional(),
     externalUserId: externalId.nullable().optional(),
     externalRef: externalId.nullable().optional(),
     metadata: metadata.nullable().optional(),
@@ -153,6 +156,7 @@ export type WatchJson = {
   status: WatchStatus;
   enabled: boolean;
   intervalMinutes: number;
+  /** Masked (`https://host/••••abcd`); the stored URL is encrypted and never returned. */
   callbackUrl: string | null;
   externalUserId: string | null;
   externalRef: string | null;
@@ -171,6 +175,16 @@ export type WatchJson = {
   createdAt: string;
 };
 
+/** The watch as embedded in webhook payloads: no callback URL (the receiver is that URL). */
+export type WebhookWatchJson = Omit<WatchJson, "callbackUrl">;
+
+export function toWebhookWatchJson(t: Target, website: Pick<Website, "id" | "url">): WebhookWatchJson {
+  const json: Partial<WatchJson> = toWatchJson(t, website, null);
+  delete json.callbackUrl;
+  return json as WebhookWatchJson;
+}
+
+/** `callbackUrl` should be the stored (decrypted) URL; it is masked in the result. */
 export function toWatchJson(t: Target, website: Pick<Website, "id" | "url">, callbackUrl: string | null): WatchJson {
   return {
     id: t.id,
@@ -180,7 +194,7 @@ export function toWatchJson(t: Target, website: Pick<Website, "id" | "url">, cal
     status: watchStatus(t),
     enabled: t.enabled,
     intervalMinutes: hoursToMinutes(t.checkIntervalHours),
-    callbackUrl,
+    callbackUrl: maskUrl(callbackUrl),
     externalUserId: t.externalUserId,
     externalRef: t.externalRef,
     metadata: parseJsonObject(t.metadata),
@@ -302,7 +316,7 @@ export function toWebhookDeliveryJson(d: WebhookDelivery): WebhookDeliveryJson {
     id: d.id,
     eventId: d.eventId,
     eventType: d.eventType,
-    url: d.url,
+    url: maskUrl(d.url)!,
     status: d.status,
     attempts: d.attempts,
     lastStatusCode: d.lastStatusCode,
