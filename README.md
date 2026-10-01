@@ -345,10 +345,17 @@ Errors always look like `{"error": {"code": "…", "message": "…"}}` (`401 una
 **Credentials are encrypted at rest.** API-key webhook signing secrets, per-account Context.dev / OpenAI / AI Gateway / Resend keys, Slack and webhook destination URLs, watch callback URLs, and queued webhook URLs are stored with AES-256-GCM (random nonce per value, the column bound as authenticated data) under `DATA_ENCRYPTION_KEY`. The key lives only in the environment, never in the database or the repo. Stored values look like `enc:v1:<keyId>:…`.
 
 - **Never sent back decrypted.** The dashboard and the API show masked values (`••••ab12`, `https://hooks.slack.com/services/••••ab12`). Saving a form with a masked value unchanged keeps the stored credential; type a new value to replace it. Errors and logs never include credential values.
-- **Existing plaintext is encrypted automatically** by `npm run db:migrate:deploy` (under the migration lock). The backfill checks each ciphertext before writing it and only replaces the exact value it read, so it is safe to interrupt and re-run. `npm run secrets -- verify` reports anything still plaintext or undecryptable.
+- **Existing plaintext is encrypted automatically** by `npm run db:migrate:deploy` (under the migration lock). The backfill checks each ciphertext before writing it and only replaces the exact value it read, so it is safe to interrupt and re-run. It also removes the plaintext `watch.callbackUrl` copy from webhook payloads queued before encryption. `npm run secrets -- verify` reports anything still plaintext or undecryptable.
 - **Key rotation:** set the new key as `DATA_ENCRYPTION_KEY` and the old one in `DATA_ENCRYPTION_KEY_PREVIOUS`; values encrypted with either key decrypt, new writes use the new key. (Re-encrypting existing values under the new key is not automated yet; keep the old key configured until then.)
 - **Losing the key loses the stored credentials** (users re-enter their keys and destinations; rotate API clients' webhook secrets). Back it up somewhere other than the database.
 - Before encryption, credentials were stored in plaintext. Old row versions can linger in Postgres dead tuples, WAL, and backups after the backfill; rotate any credential whose earlier exposure matters.
+
+**Security backlog** (known, not yet done):
+
+- **Hash `website.publicShareToken`.** Public share links are bearer tokens stored in plaintext. Store a hash instead (a deterministic hash keeps the exact-match lookup working); the dashboard would then show a link only when it is created.
+- **Review Better Auth's storage of `session.token` and `verification.value`.** Both are plaintext in the database by the library's design; confirm what a database read alone allows (session cookies are signed with `BETTER_AUTH_SECRET`) and whether hashing them is supported.
+- **Remove transitional plaintext reads.** `decryptSecret` still returns values without the `enc:` prefix as-is, so legacy rows keep working during the backfill. Drop this once every database reports zero plaintext in `npm run secrets -- verify`.
+- **Automate key rotation.** Add a command that re-encrypts every value under the current `DATA_ENCRYPTION_KEY`, so old keys can be removed from `DATA_ENCRYPTION_KEY_PREVIOUS`.
 
 ---
 

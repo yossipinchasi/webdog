@@ -12,6 +12,10 @@
  *    single atomic statement, so an interrupted run leaves every row either fully
  *    plaintext or fully encrypted, and simply running again finishes the job.
  *
+ * It also strips `watch.callbackUrl` from webhook payloads queued before encryption: the
+ * outbox stored that plaintext copy inside the JSON body (events no longer include it),
+ * with the same compare-and-set, so it is equally idempotent and resumable.
+ *
  * Old row versions may survive in Postgres dead tuples, WAL, and backups until they are
  * vacuumed/expire; rotate a credential if its prior plaintext exposure matters.
  */
@@ -92,7 +96,59 @@ export async function backfillSecrets(
     }
     results.push(result);
   }
+  results.push(await scrubLegacyPayloads(client, options.dryRun ?? false));
   return results;
+}
+
+const PAYLOAD_LABEL = "webhookDelivery.payload (callbackUrl copies)";
+
+/**
+ * A webhook payload without `watch.callbackUrl`, or null when it has none (or is not JSON).
+ * Only that key is removed; the rest of the event is re-serialized unchanged.
+ */
+export function payloadWithoutCallbackUrl(payload: string): string | null {
+  let event: unknown;
+  try {
+    event = JSON.parse(payload);
+  } catch {
+    return null;
+  }
+  const watch = (event as { watch?: unknown } | null)?.watch;
+  if (!watch || typeof watch !== "object" || !("callbackUrl" in watch)) return null;
+  delete (watch as Record<string, unknown>).callbackUrl;
+  return JSON.stringify(event);
+}
+
+/** Candidates contain the key somewhere; payloadWithoutCallbackUrl decides. Keyset-paged, so rows it leaves alone are not re-read. */
+async function* legacyPayloads(client: pg.Client | pg.PoolClient) {
+  let after = "";
+  for (;;) {
+    const rows = (
+      await client.query<{ id: string; payload: string }>(
+        `SELECT id, payload FROM "webhookDelivery" WHERE payload LIKE '%"callbackUrl"%' AND id > $1 ORDER BY id LIMIT ${BATCH}`,
+        [after],
+      )
+    ).rows;
+    if (rows.length === 0) return;
+    yield* rows;
+    after = rows.at(-1)!.id;
+  }
+}
+
+async function scrubLegacyPayloads(client: pg.Client | pg.PoolClient, dryRun: boolean): Promise<BackfillColumnResult> {
+  const result: BackfillColumnResult = { column: PAYLOAD_LABEL, encrypted: 0, skippedChanged: 0 };
+  for await (const row of legacyPayloads(client)) {
+    const scrubbed = payloadWithoutCallbackUrl(row.payload);
+    if (scrubbed === null) continue;
+    if (dryRun) {
+      result.encrypted += 1;
+      continue;
+    }
+    const res = await client.query(`UPDATE "webhookDelivery" SET payload = $1 WHERE id = $2 AND payload = $3`, [scrubbed, row.id, row.payload]);
+    if (res.rowCount === 1) result.encrypted += 1;
+    else result.skippedChanged += 1;
+  }
+  return result;
 }
 
 export type VerifyColumnResult = { column: string; encrypted: number; plaintext: number; undecryptable: number };
@@ -118,5 +174,10 @@ export async function verifySecrets(client: pg.Client | pg.PoolClient): Promise<
     }
     results.push(result);
   }
+  const payloads: VerifyColumnResult = { column: PAYLOAD_LABEL, encrypted: 0, plaintext: 0, undecryptable: 0 };
+  for await (const row of legacyPayloads(client)) {
+    if (payloadWithoutCallbackUrl(row.payload) !== null) payloads.plaintext += 1;
+  }
+  results.push(payloads);
   return results;
 }
