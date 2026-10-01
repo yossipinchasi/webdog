@@ -4,6 +4,7 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import type { LinkScope } from "@/lib/db/schema";
 import * as schema from "@/lib/db/schema";
+import { publicTarget } from "@/lib/target-public";
 import { badRequest, notFound, parseJson, requireApiUserWithWriteOwner } from "@/lib/api";
 import { websiteOwnerAccessible } from "@/lib/account-access";
 import { computeNextCheckDueAfterSuccess } from "@/lib/scraper";
@@ -153,5 +154,5 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
   await db.update(schema.target).set(updates).where(eq(schema.target.id, id));
   const [updated] = await db.select().from(schema.target).where(eq(schema.target.id, id)).limit(1);
-  return NextResponse.json({ target: updated });
+  return NextResponse.json({ target: updated ? publicTarget(updated) : updated });
 }

@@ -3,6 +3,7 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import * as schema from "@/lib/db/schema";
+import { publicTarget } from "@/lib/target-public";
 import { badRequest, getApiUser, notFound, parseJson, requireApiUserWithWriteOwner } from "@/lib/api";
 import { websiteOwnerAccessible } from "@/lib/account-access";
 import { stringifyWebsiteNotificationDestinationIds } from "@/lib/website-notification-destinations";
@@ -33,7 +34,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
       .limit(50),
   ]);
 
-  return NextResponse.json({ website, targets, alerts });
+  return NextResponse.json({ website, targets: targets.map(publicTarget), alerts });
 }
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {

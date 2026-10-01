@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import type { Target } from "./db/schema";
 import { isMaskedValue, MASK, maskSecret, maskUrl, unmaskedOr } from "./secret-mask";
+import { publicTarget, sharedTarget } from "./target-public";
 
 // What the browser/API may see of a stored credential.
 
@@ -40,4 +42,13 @@ test("unmaskedOr: a typed value wins; empty or masked input keeps the stored one
   assert.equal(unmaskedOr(`${MASK}abcd`, "sk-stored"), "sk-stored");
   assert.equal(unmaskedOr("  ", "sk-stored"), "sk-stored");
   assert.equal(unmaskedOr(undefined, null), null);
+});
+
+test("dashboard targets carry a masked callback URL; shared targets carry none", () => {
+  const row = { id: "tgt_1", callbackUrl: "https://example.com/hooks/tok_abcdefghijklmnop" } as Target;
+  const dashboard = publicTarget(row);
+  assert.ok(dashboard.callbackUrl && isMaskedValue(dashboard.callbackUrl) && !dashboard.callbackUrl.includes("tok_abcdefgh"));
+  assert.equal(sharedTarget(row).callbackUrl, null);
+  assert.equal(publicTarget({ ...row, callbackUrl: null }).callbackUrl, null);
+  assert.equal(row.callbackUrl, "https://example.com/hooks/tok_abcdefghijklmnop", "input row is not mutated");
 });

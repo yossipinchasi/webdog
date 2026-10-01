@@ -15,7 +15,12 @@ import {
 
 const keyA = randomBytes(32).toString("base64");
 const keyB = randomBytes(32).toString("base64");
-const saved = { key: process.env.DATA_ENCRYPTION_KEY, prev: process.env.DATA_ENCRYPTION_KEY_PREVIOUS, env: process.env.NODE_ENV };
+const saved = {
+  key: process.env.DATA_ENCRYPTION_KEY,
+  prev: process.env.DATA_ENCRYPTION_KEY_PREVIOUS,
+  env: process.env.NODE_ENV,
+  db: process.env.DATABASE_URL,
+};
 const env = process.env as Record<string, string | undefined>;
 function setKeys(current?: string, previous?: string) {
   if (current === undefined) delete env.DATA_ENCRYPTION_KEY;
@@ -28,6 +33,8 @@ afterEach(() => {
   setKeys(saved.key, saved.prev);
   if (saved.env === undefined) delete env.NODE_ENV;
   else env.NODE_ENV = saved.env;
+  if (saved.db === undefined) delete env.DATABASE_URL;
+  else env.DATABASE_URL = saved.db;
 });
 
 const P = "apiClient.webhookSecret";
@@ -123,4 +130,30 @@ test("key configuration: production requires a key; keys must be 32 bytes", () =
   assert.throws(() => encryptSecret(secret, P), (e: Error) => e instanceof EncryptionKeyError && /32 random bytes/.test(e.message));
   setKeys(keyA, "not-a-key");
   assert.throws(() => encryptSecret(secret, P), EncryptionKeyError);
+});
+
+test("key format is validated strictly: typos and non-base64 characters are rejected", () => {
+  assert.equal(decryptSecret(encryptSecret(secret, P), P), secret);
+  setKeys(Buffer.from(keyA, "base64").toString("base64url"));
+  assert.equal(decryptSecret(encryptSecret(secret, P), P), secret, "base64url without padding is accepted");
+  for (const bad of [`${keyA.slice(0, 10)}!${keyA.slice(10)}`, `${keyA.slice(0, 20)} ${keyA.slice(20)}`, Buffer.from(keyA, "base64").toString("hex")]) {
+    setKeys(bad);
+    assert.throws(() => encryptSecret(secret, P), EncryptionKeyError, bad.length.toString());
+  }
+});
+
+test("the public development key is refused for a database that is not local", () => {
+  setKeys(undefined);
+  env.NODE_ENV = "development";
+  for (const url of ["postgres://u:p@localhost:5432/db", "postgres://u:p@127.0.0.1/db", "postgres://u:p@[::1]/db"]) {
+    env.DATABASE_URL = url;
+    assert.equal(decryptSecret(encryptSecret(secret, P), P), secret, url);
+  }
+  const devCiphertext = encryptSecret(secret, P);
+  env.DATABASE_URL = "postgres://u:p@db.example.internal:5432/prod";
+  assert.throws(() => encryptSecret(secret, P), (e: Error) => e instanceof EncryptionKeyError && /not a local database/.test(e.message));
+  // Production never trusts the development key, even for reading.
+  setKeys(keyA);
+  env.NODE_ENV = "production";
+  assert.throws(() => decryptSecret(devCiphertext, P), SecretDecryptionError);
 });

@@ -164,7 +164,7 @@ All configuration is environment variables (see `.env.example`). Everything exce
 | `POSTGRES_PORT` | No | Host port for the Docker Compose Postgres (default `5432`) |
 | `CONTEXT_DEV_API_KEY` | No | Server-managed [Context.dev](https://link.context.dev/webdog) key used for all accounts. Leave blank to let each account save its own key in Settings |
 | `SCRAPE_CRON` | No | Worker schedule, cron syntax (default `*/15 * * * *`) |
-| `DATA_ENCRYPTION_KEY` | Prod only | 32 random bytes, base64 (`openssl rand -base64 32`). Encrypts stored credentials at rest (see [Security](#security)). **Back it up: if it is lost, stored credentials cannot be recovered.** Without it outside production, a development-only key is used |
+| `DATA_ENCRYPTION_KEY` | Prod only | 32 random bytes, base64 (`openssl rand -base64 32`). Encrypts stored credentials at rest (see [Security](#security)). **Back it up: if it is lost, stored credentials cannot be recovered.** Without it outside production, a development-only key is used, and only with a local (`localhost`) database |
 | `DATA_ENCRYPTION_KEY_PREVIOUS` | No | Comma-separated old keys, still accepted for decryption during a key rotation |
 | `SNAPSHOT_RETENTION_DAYS` | No | Delete stored snapshots older than this many days (the newest snapshot per monitored page is always kept as the diff baseline). Blank keeps all history |
 | `WEBHOOK_POLL_SECONDS` | No | How often the worker sends due watch webhooks and retries (default `10`) |

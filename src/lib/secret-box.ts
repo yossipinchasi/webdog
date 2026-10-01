@@ -12,7 +12,8 @@
  *
  * DATA_ENCRYPTION_KEY: 32 random bytes, base64 (`openssl rand -base64 32`). Required
  * when NODE_ENV=production; otherwise a fixed development key is used (with a warning)
- * so local setups work without configuration.
+ * so local setups work without configuration, but only against a database on this
+ * machine: the development key is public, so it must never encrypt real credentials.
  *
  * Values without the `enc:` prefix are legacy plaintext from before encryption and are
  * returned as-is so reads keep working while the backfill runs.
@@ -52,17 +53,34 @@ export function keyIdOf(key: Buffer): string {
 }
 
 function parseKey(raw: string, name: string): Buffer {
-  const key = Buffer.from(raw.trim(), raw.includes("-") || raw.includes("_") ? "base64url" : "base64");
-  if (key.length !== 32) {
+  const trimmed = raw.trim();
+  const encoding = trimmed.includes("-") || trimmed.includes("_") ? "base64url" : "base64";
+  const key = Buffer.from(trimmed, encoding);
+  // Node's base64 decoder skips invalid characters; re-encoding catches typos and non-base64 input.
+  const canonical = (s: string) => s.replace(/=+$/, "");
+  if (key.length !== 32 || canonical(key.toString(encoding)) !== canonical(trimmed)) {
     throw new EncryptionKeyError(`${name} must be 32 random bytes, base64-encoded (generate with: openssl rand -base64 32).`);
   }
   return key;
 }
 
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+
+/** The development key may only be used without a database or with one on this machine. */
+function databaseIsLocal(): boolean {
+  const url = process.env.DATABASE_URL?.trim();
+  if (!url) return true;
+  try {
+    return LOCAL_HOSTS.has(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
 function keyring(): Keyring {
   const currentRaw = process.env.DATA_ENCRYPTION_KEY?.trim() ?? "";
   const previousRaw = process.env.DATA_ENCRYPTION_KEY_PREVIOUS?.trim() ?? "";
-  const envKey = `${currentRaw}|${previousRaw}|${process.env.NODE_ENV ?? ""}`;
+  const envKey = `${currentRaw}|${previousRaw}|${process.env.NODE_ENV ?? ""}|${process.env.DATABASE_URL ?? ""}`;
   if (cached?.env === envKey) return cached.ring;
 
   let current: Buffer;
@@ -70,6 +88,10 @@ function keyring(): Keyring {
     current = parseKey(currentRaw, "DATA_ENCRYPTION_KEY");
   } else if (process.env.NODE_ENV === "production") {
     throw new EncryptionKeyError("DATA_ENCRYPTION_KEY must be set in production (generate with: openssl rand -base64 32).");
+  } else if (!databaseIsLocal()) {
+    throw new EncryptionKeyError(
+      "DATA_ENCRYPTION_KEY must be set when DATABASE_URL is not a local database; the development-only key is public.",
+    );
   } else {
     if (!warnedDevKey) {
       console.warn("[secrets] DATA_ENCRYPTION_KEY is not set; using the development-only key. Never use this in production.");
@@ -132,7 +154,10 @@ export function decryptSecret(stored: string, purpose: string): string {
   }
 }
 
-/** Key id new values are written with (for diagnostics; not secret). */
+/**
+ * Key id new values are written with (for diagnostics; not secret). Also validates the
+ * key configuration, so processes call it at startup to fail fast instead of on first use.
+ */
 export function currentKeyId(): string {
   return keyring().current.id;
 }

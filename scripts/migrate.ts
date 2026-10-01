@@ -20,6 +20,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { resolveDatabaseUrl } from "../src/lib/db/database-url";
 import { backfillSecrets } from "../src/lib/secret-backfill";
+import { currentKeyId } from "../src/lib/secret-box";
 
 /** Advisory-lock key ("WDOG", "MIGR"); distinct from the per-website check locks. */
 const LOCK_KEY = [0x57444f47, 0x4d494752] as const;
@@ -27,6 +28,9 @@ const LOCK_KEY = [0x57444f47, 0x4d494752] as const;
 const LOCK_TIMEOUT = "10min";
 
 async function main() {
+  // Validate the encryption key before anything else, so a missing or malformed key fails
+  // the deploy here (pre-deploy runs on both services) rather than on the first credential read.
+  console.log(`[migrate] encryption key id: ${currentKeyId()}`);
   const client = new pg.Client({ connectionString: resolveDatabaseUrl() });
   await client.connect();
   try {
