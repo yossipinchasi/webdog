@@ -106,7 +106,13 @@ export async function postSignedWebhook(p: {
 
 type Claimed = typeof schema.webhookDelivery.$inferSelect;
 
-async function claimDue(nowMs: number, limit: number, ids?: string[]): Promise<Claimed[]> {
+/**
+ * Due-ness and every `nextAttemptAt` use the database clock (`now()`): rows get their
+ * first due time from the column default, so comparing with the app server's clock
+ * would make a just-queued delivery look "not due yet" whenever the two clocks differ
+ * by a few milliseconds, and the immediate attempt would silently skip it.
+ */
+async function claimDue(limit: number, ids?: string[]): Promise<Claimed[]> {
   return db.transaction(async (tx) => {
     const due = await tx
       .select({ id: schema.webhookDelivery.id })
@@ -114,7 +120,7 @@ async function claimDue(nowMs: number, limit: number, ids?: string[]): Promise<C
       .where(
         and(
           eq(schema.webhookDelivery.status, "pending"),
-          lte(schema.webhookDelivery.nextAttemptAt, new Date(nowMs)),
+          lte(schema.webhookDelivery.nextAttemptAt, sql`now()`),
           deliveryClientNotRevoked,
           ids ? inArray(schema.webhookDelivery.id, ids) : undefined,
         ),
@@ -127,8 +133,8 @@ async function claimDue(nowMs: number, limit: number, ids?: string[]): Promise<C
       .update(schema.webhookDelivery)
       .set({
         attempts: sql`${schema.webhookDelivery.attempts} + 1`,
-        lastAttemptAt: new Date(nowMs),
-        nextAttemptAt: new Date(nowMs + CLAIM_LEASE_MS),
+        lastAttemptAt: sql`now()`,
+        nextAttemptAt: sql`now() + make_interval(secs => ${CLAIM_LEASE_MS / 1000})`,
       })
       .where(inArray(schema.webhookDelivery.id, due.map((d) => d.id)))
       .returning();
@@ -158,7 +164,7 @@ async function recordOutcome(row: Claimed, result: SendResult, secretMissing: bo
     .set({
       status: delay === null ? "failed" : "pending",
       completedAt: delay === null ? sql`now()` : null,
-      nextAttemptAt: new Date(nowMs + (delay ?? 0)),
+      nextAttemptAt: sql`now() + make_interval(secs => ${(delay ?? 0) / 1000})`,
       lastStatusCode: result.statusCode,
       lastError: result.error,
     })
@@ -187,7 +193,7 @@ export async function deliverDueWebhooks(options: { ids?: string[]; batchSize?: 
   const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
 
   for (let batch = 0; batch < MAX_BATCHES_PER_RUN; batch++) {
-    const claimed = await claimDue(Date.now(), batchSize, options.ids);
+    const claimed = await claimDue(batchSize, options.ids);
     if (claimed.length === 0) break;
 
     // Read right before sending, so a revocation committed after the claim still stops the send.
@@ -233,7 +239,7 @@ export async function deliverDueWebhooks(options: { ids?: string[]; batchSize?: 
 export async function requeueDelivery(id: string): Promise<boolean> {
   const requeued = await db
     .update(schema.webhookDelivery)
-    .set({ status: "pending", attempts: 0, nextAttemptAt: new Date(), deliveredAt: null, completedAt: null })
+    .set({ status: "pending", attempts: 0, nextAttemptAt: sql`now()`, deliveredAt: null, completedAt: null })
     .where(and(eq(schema.webhookDelivery.id, id), eq(schema.webhookDelivery.status, "failed"), deliveryClientNotRevoked))
     .returning({ id: schema.webhookDelivery.id });
   return requeued.length === 1;
