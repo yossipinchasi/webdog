@@ -32,7 +32,7 @@ import {
 
 /** List the account's watches, newest first, with keyset pagination. */
 export async function GET(req: Request) {
-  const auth = await authenticateApiClient(req);
+  const auth = await authenticateApiClient(req, "read");
   if (!auth.client) return auth.response;
 
   const parsed = listWatchesQuerySchema.safeParse(Object.fromEntries(new URL(req.url).searchParams));
@@ -75,7 +75,7 @@ export async function GET(req: Request) {
  * the threshold), since a crossing-based condition would otherwise never fire.
  */
 export async function POST(req: Request) {
-  const auth = await authenticateApiClient(req);
+  const auth = await authenticateApiClient(req, "create");
   if (!auth.client) return auth.response;
   const client = auth.client;
   const ownerId = client.ownerUserId;

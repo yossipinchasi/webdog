@@ -8,7 +8,7 @@ import { loadWatch } from "@/lib/v1/watches";
 
 /** A watch's detected changes, newest first — including ones the AI filter held back, flagged. */
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const auth = await authenticateApiClient(req);
+  const auth = await authenticateApiClient(req, "read");
   if (!auth.client) return auth.response;
   const { id } = await params;
 

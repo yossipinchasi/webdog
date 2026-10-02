@@ -344,7 +344,32 @@ Delivery is **at-least-once**: events are written to an outbox in the same trans
 
 > Watches created before signed webhooks were routed through an unsigned `webdog_ai.new_alerts` WEBHOOK destination. The migration moves their `callbackUrl` onto the watch, so they now receive the signed events above instead. Dashboard WEBHOOK destinations are unchanged and still receive the `webdog_ai.new_alerts` payload.
 
-Errors always look like `{"error": {"code": "…", "message": "…"}}` (`401 unauthorized`, `404 not_found`, `409 check_in_progress` / `external_ref_conflict` / `watch_revoked` / `delivery_not_failed`, `422 validation_failed` / `invalid_url` / `invalid_cursor` / `intent_required` / `ai_not_configured` / `condition_not_supported` / `callback_url_not_allowed`, `403 monitor_limit_reached`).
+#### Rate limits
+
+Each API key has its own limits, counted in Postgres, so they hold across web replicas and restarts. Requests are grouped by cost:
+
+| Class | Endpoints | Default |
+|---|---|---|
+| `read` | `GET /watches`, `GET /watches/:id`, `GET /watches/:id/events`, `GET /watches/:id/deliveries` | 300 / minute |
+| `write` | `PATCH /watches/:id`, `DELETE /watches/:id` | 60 / minute |
+| `create` | `POST /watches` (runs a baseline scrape, maybe AI) | 20 / minute and 500 / day |
+| `check` | `POST /watches/:id/check` (scrape, maybe AI) | 10 / minute and 300 / day |
+| `webhook` | `POST /webhooks/test`, `POST /deliveries/:id/retry` (outbound requests) | 10 / minute |
+
+Over a limit, the API answers `429` with `Retry-After` (seconds until the exhausted window resets), `RateLimit-Limit`, `RateLimit-Remaining: 0`, `RateLimit-Reset` (seconds) and `RateLimit-Policy` (`<limit>;w=<window seconds>`), and the body:
+
+```json
+{"error": {"code": "rate_limited", "message": "Rate limit exceeded for check requests (10 per minute). Retry after 42s.",
+  "details": {"class": "check", "limit": 10, "windowSeconds": 60, "retryAfterSeconds": 42, "resetAt": "2026-10-01T12:01:00.000Z"}}}
+```
+
+- Windows are fixed and aligned to the clock (per-minute windows start on the minute; per-day windows at 00:00 UTC), so a client can briefly get up to twice a per-minute limit across a window boundary; the daily caps bound the total.
+- Rejected requests don't count. When a class has several rules and any is exhausted, the request counts against none of them.
+- Invalid and revoked keys get `401` before any rate limiting. Dashboard and session-authenticated endpoints are not rate limited.
+- Configure per class with `RATE_LIMIT_READ`, `RATE_LIMIT_WRITE`, `RATE_LIMIT_CREATE`, `RATE_LIMIT_CHECK`, `RATE_LIMIT_WEBHOOK`: comma-separated `limit/window` rules, the window in seconds or with `s`/`m`/`h`/`d` (max 7 days), e.g. `RATE_LIMIT_CHECK=10/1m,300/1d`, or `off`. An invalid value logs a warning and keeps the defaults. `RATE_LIMIT_ENABLED=false` turns all limits off.
+- Counters live in the `apiRateLimit` table, one row per key, class and window. Expired windows are deleted by the worker on every tick (and in small batches by the web app), so the table stays small.
+
+Errors always look like `{"error": {"code": "…", "message": "…"}}` (`401 unauthorized`, `404 not_found`, `409 check_in_progress` / `external_ref_conflict` / `watch_revoked` / `delivery_not_failed`, `422 validation_failed` / `invalid_url` / `invalid_cursor` / `intent_required` / `ai_not_configured` / `condition_not_supported` / `callback_url_not_allowed`, `403 monitor_limit_reached`, `429 rate_limited`).
 
 ---
 

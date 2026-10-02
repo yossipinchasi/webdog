@@ -465,6 +465,25 @@ export const accountInvite = pgTable(
   }),
 );
 
+/**
+ * Watcher API rate-limit counters (see `rate-limit.ts`): one row per (client, class,
+ * window length) and window. Rows expire with their window and are deleted by the worker.
+ */
+export const apiRateLimit = pgTable(
+  "apiRateLimit",
+  {
+    /** `<apiClientId>:<class>:<windowSeconds>`. */
+    key: text("key").notNull(),
+    windowStart: timestamp("windowStart", { withTimezone: true, precision: 3 }).notNull(),
+    count: integer("count").notNull(),
+    expiresAt: timestamp("expiresAt", { withTimezone: true, precision: 3 }).notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.key, t.windowStart] }),
+    byExpiry: index("api_rate_limit_expires_idx").on(t.expiresAt),
+  }),
+);
+
 export type User = typeof user.$inferSelect;
 export type ApiClient = typeof apiClient.$inferSelect;
 export type UserNotificationSettings = typeof userNotificationSettings.$inferSelect;

@@ -64,6 +64,13 @@
       "when": 1790900239034,
       "tag": "0008_revoked_api_clients",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1790901464318,
+      "tag": "0009_api_rate_limits",
+      "breakpoints": true
     }
   ]
 }
