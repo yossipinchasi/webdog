@@ -44,6 +44,7 @@ Paste any URL and webdog will:
 - [Notifications](#notifications)
 - [Watcher API (v1)](#watcher-api-v1)
 - [Security](#security)
+- [Worker health](#worker-health)
 - [Deployment](#deployment)
 - [Scripts](#scripts)
 - [Project structure](#project-structure)
@@ -397,6 +398,27 @@ Errors always look like `{"error": {"code": "…", "message": "…"}}` (`401 una
 
 ---
 
+## Worker health
+
+`GET /api/health/worker` reports whether the background worker is doing its two jobs. It answers `200` when both are healthy and `503` otherwise, never cached, without authentication:
+
+```json
+{"status": "healthy", "checkedAt": "2026-10-02T12:00:00.000Z",
+ "loops": {
+   "checks":   {"status": "healthy", "lastSuccessAt": "2026-10-02T11:58:41.112Z", "secondsSinceSuccess": 79,
+                "staleAfter": "2026-10-02T12:29:00.000Z", "lastPassFailed": false, "runningSince": null},
+   "webhooks": {"status": "healthy", "lastSuccessAt": "2026-10-02T11:59:58.004Z", "secondsSinceSuccess": 2,
+                "staleAfter": "2026-10-02T12:02:08.004Z", "lastPassFailed": false, "runningSince": null}}}
+```
+
+- **A heartbeat is a completed pass, not a live process.** `checks` (scheduled website and watch checks) records one each time a run has gone through every website; `webhooks` (delivery and retries) each time a delivery pass finishes, including passes with nothing due. A loop that hangs or keeps failing goes stale even while the process runs.
+- **Stale threshold:** after each completed pass the worker records when the next one should have succeeded: the time until the loop's next run, plus 15 minutes for `checks` or 2 minutes for `webhooks` (or twice the last pass's duration, if longer). With the defaults that is about 15–30 minutes for `checks` (every 15 minutes) and about 2 minutes for `webhooks` (every 10 seconds). The worker publishes this from its own `SCRAPE_CRON` / `WEBHOOK_POLL_SECONDS`, so the web service needs neither. All times are database time.
+- **Loop status:** `never_run` (no pass has completed yet), `healthy`, or `stale`. `lastPassFailed` says the latest pass failed as a whole (e.g. the database was unreachable); `runningSince` shows a `checks` pass in progress. **Overall:** `healthy` only when both loops are; `never_run` when neither has run; otherwise `unhealthy`. If the database can't be reached the endpoint answers `503 {"status": "unknown"}`.
+- **Restarts and several workers:** the state is two rows in `workerHeartbeat`, updated by every worker; times only move forward, so a restarted or second worker can't make it look older. Health recovers as soon as a new pass completes. With several workers, the loop is healthy if any of them keeps it running (one dead instance among several healthy ones isn't detected).
+- **Kept separate from `/api/health` on purpose:** `/api/health` checks only the web app and its database, so the hosting platform never restarts a healthy web service because the worker is down. Point an external uptime check at `/api/health/worker` to be alerted about the worker.
+
+---
+
 ## Deployment
 
 ### Railway
@@ -436,7 +458,7 @@ Notes:
 
 - `.railway/railway.ts` describes the whole project: `railway config apply` can remove resources and variables it does not declare. Change settings such as `SNAPSHOT_RETENTION_DAYS` there, not in the dashboard, and don't run `apply` while temporary services you created by hand still exist.
 - For a custom domain, add it to `web` in Railway, then set `BETTER_AUTH_URL=https://your-domain` for **both** services in `.railway/railway.ts`.
-- Monitoring: Railway logs per service (`railway logs --service worker`). The worker logs every scrape run and every webhook batch. The `web` health check covers the web app only; automated worker-health monitoring (e.g. a heartbeat exposed through `/api/health`) is a planned hardening item.
+- Monitoring: Railway logs per service (`railway logs --service worker`). The worker logs every scrape run and every webhook batch. The `web` health check covers the web app only; worker health is reported separately by `GET /api/health/worker` (see [Worker health](#worker-health)).
 - `.railway/railway.ts` is type-checked (`npm run typecheck`) and covered by `src/lib/railway-config.test.ts`; `railway config plan` needs a linked project.
 
 Publishing it as a Railway template? See [`railway/template-publish.md`](./railway/template-publish.md).
