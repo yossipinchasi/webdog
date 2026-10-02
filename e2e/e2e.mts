@@ -749,8 +749,15 @@ if (PHASE === "P") {
   const t0 = Date.now();
   const b2 = await pruneWebhookDeliveries(30, { batchSize: 1_000 });
   check("P batching: the next run finishes the backlog; pending rows untouched", b2.deleted === 15_000 && b2.complete && (await countLike("whd_big_")) === 0 && (await countLike("whd_bigkeep_")) === 2_000, { ...b2, ms: Date.now() - t0 });
+  // Whether the planner *prefers* the index depends on table statistics; what matters is that the
+  // partial index matches the prune query, so check it is usable with the alternatives disabled.
+  await db.query(`ANALYZE "webhookDelivery"`);
+  await db.query("BEGIN");
+  await db.query("SET LOCAL enable_seqscan = off");
+  await db.query("SET LOCAL enable_bitmapscan = off");
   const plan = (await db.query(`EXPLAIN SELECT id FROM "webhookDelivery" WHERE "completedAt" IS NOT NULL AND "completedAt" < now() - interval '30 days' AND status IN ('delivered','failed','canceled') ORDER BY "completedAt" LIMIT 1000`)).rows.map((r) => r["QUERY PLAN"]).join("\n");
-  check("P the prune query can use the partial completedAt index", /webhook_delivery_completed_idx/.test(plan), plan);
+  await db.query("ROLLBACK");
+  check("P the prune query can use the partial completedAt index", /Index Scan using webhook_delivery_completed_idx/.test(plan), plan);
 
   // --- interrupted run (SIGKILL mid-run), then re-run
   await seed("whd_int_", 30_000, "failed", "now() - interval '100 days'", "now() - interval '50 days'");
