@@ -115,7 +115,8 @@ export function guardedLookup(resolve: Resolve = systemResolve): LookupFunction 
   };
 }
 
-export type PostResult = { status: number; body: string };
+/** `retryAfter`: the raw `Retry-After` response header, if any (the caller decides whether it applies). */
+export type PostResult = { status: number; body: string; retryAfter: string | null };
 
 /**
  * POST a JSON body with SSRF protection. Resolves with the response status and up to
@@ -166,7 +167,14 @@ export function postJson(
           if (size < MAX_RESPONSE_BYTES) chunks.push(chunk.subarray(0, MAX_RESPONSE_BYTES - size));
           size += chunk.length;
         });
-        res.on("end", () => resolvePromise({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") }));
+        const retryAfter = res.headers["retry-after"];
+        res.on("end", () =>
+          resolvePromise({
+            status: res.statusCode ?? 0,
+            body: Buffer.concat(chunks).toString("utf8"),
+            retryAfter: typeof retryAfter === "string" ? retryAfter : null,
+          }),
+        );
         res.on("error", reject);
       },
     );

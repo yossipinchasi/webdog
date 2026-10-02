@@ -23,9 +23,12 @@ import { OutboundBlockedError, postJson } from "./outbound-guard";
 import { deliveryClientNotRevoked, REVOKED_DELIVERY_ERROR } from "./api-client-revocation";
 import {
   isPermanentFailure,
+  MAX_RETRY_DELAY_MS,
   nextRetryDelayMs,
   parseWatchErrorThreshold,
+  retryAfterFor,
   signatureHeader,
+  type RetryAfter,
   type WatcherEvent,
 } from "./watcher-events";
 
@@ -67,6 +70,8 @@ export type SendResult = {
   error: string | null;
   /** The target is refused outright (SSRF guard); retrying cannot succeed. */
   blocked?: boolean;
+  /** Raw `Retry-After` of a non-2xx response; honored for 429/503 (see `nextAttemptAtSql`). */
+  retryAfter?: string | null;
 };
 
 /** One signed POST through the SSRF guard (no private targets, no redirects). Never throws. */
@@ -93,7 +98,7 @@ export async function postSignedWebhook(p: {
     if (res.status >= 200 && res.status < 300) return { ok: true, statusCode: res.status, error: null };
     const text = res.body.trim();
     const snippet = text ? `: ${text.slice(0, MAX_ERROR_CHARS)}` : "";
-    return { ok: false, statusCode: res.status, error: `HTTP ${res.status}${snippet}` };
+    return { ok: false, statusCode: res.status, error: `HTTP ${res.status}${snippet}`, retryAfter: res.retryAfter };
   } catch (err) {
     if (err instanceof OutboundBlockedError) {
       return { ok: false, statusCode: null, error: `Blocked: ${err.message}`.slice(0, MAX_ERROR_CHARS), blocked: true };
@@ -148,6 +153,23 @@ type Outcome = "delivered" | "retrying" | "failed" | "canceled";
  * while its request was in flight stays canceled; a request that did succeed is recorded
  * as delivered either way, since it was.
  */
+/**
+ * When to try again, by the database clock: the normal backoff (`delayMs`), or a later
+ * time the receiver asked for with Retry-After on a 429/503, capped at 12 hours from now.
+ * The later of the two wins, so Retry-After can only lengthen a wait. A past date, "0",
+ * or a value shorter than the backoff leaves the backoff in place.
+ */
+export function nextAttemptAtSql(delayMs: number, retryAfter: RetryAfter | null) {
+  const backoff = sql`now() + make_interval(secs => ${delayMs / 1000})`;
+  if (!retryAfter) return backoff;
+  const capSeconds = MAX_RETRY_DELAY_MS / 1000;
+  const requested =
+    retryAfter.kind === "seconds"
+      ? sql`now() + make_interval(secs => ${Math.min(retryAfter.seconds, capSeconds)})`
+      : sql`LEAST(${retryAfter.at.toISOString()}::timestamptz, now() + make_interval(secs => ${capSeconds}))`;
+  return sql`GREATEST(${backoff}, ${requested})`;
+}
+
 async function recordOutcome(row: Claimed, result: SendResult, secretMissing: boolean): Promise<Outcome> {
   const nowMs = Date.now();
   if (result.ok) {
@@ -158,15 +180,18 @@ async function recordOutcome(row: Claimed, result: SendResult, secretMissing: bo
     return "delivered";
   }
   const permanent = secretMissing || result.blocked || isPermanentFailure(result.statusCode);
+  // Out of attempts (or permanent) means failed, whatever Retry-After says: it can delay a
+  // retry, never add one.
   const delay = permanent ? null : nextRetryDelayMs(row.attempts);
+  const retryAfter = delay === null ? null : retryAfterFor(result.statusCode, result.retryAfter);
   await db
     .update(schema.webhookDelivery)
     .set({
       status: delay === null ? "failed" : "pending",
       completedAt: delay === null ? sql`now()` : null,
-      nextAttemptAt: sql`now() + make_interval(secs => ${(delay ?? 0) / 1000})`,
+      nextAttemptAt: nextAttemptAtSql(delay ?? 0, retryAfter),
       lastStatusCode: result.statusCode,
-      lastError: result.error,
+      lastError: retryAfter ? `${result.error ?? ""} (Retry-After: ${result.retryAfter!.trim().slice(0, 64)})`.slice(0, MAX_ERROR_CHARS + 80) : result.error,
     })
     .where(and(eq(schema.webhookDelivery.id, row.id), eq(schema.webhookDelivery.status, "pending")));
   return delay === null ? "failed" : "retrying";
