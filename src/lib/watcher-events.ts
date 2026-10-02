@@ -39,6 +39,70 @@ export function nextRetryDelayMs(attemptsSoFar: number, random: () => number = M
   return Math.round(base * (0.9 + random() * 0.2));
 }
 
+/** The longest wait before a retry; a receiver's Retry-After is capped to this. */
+export const MAX_RETRY_DELAY_MS = RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1]!;
+
+/**
+ * Responses whose `Retry-After` is honored: 503 (RFC 9110) and 429 (RFC 6585). Other
+ * statuses keep the normal schedule (Retry-After on a 3xx is about redirects, which are
+ * never followed).
+ */
+export const RETRY_AFTER_STATUSES: ReadonlySet<number> = new Set([429, 503]);
+
+export type RetryAfter = { kind: "seconds"; seconds: number } | { kind: "date"; at: Date };
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTH = `(${MONTHS.join("|")})`;
+const TIME = "(\\d{2}):(\\d{2}):(\\d{2})";
+/** IMF-fixdate: "Sun, 06 Nov 1994 08:49:37 GMT" (the preferred form). */
+const IMF_FIXDATE = new RegExp(`^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), (\\d{2}) ${MONTH} (\\d{4}) ${TIME} GMT$`);
+/** Obsolete RFC 850: "Sunday, 06-Nov-94 08:49:37 GMT". */
+const RFC_850 = new RegExp(`^(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), (\\d{2})-${MONTH}-(\\d{2}) ${TIME} GMT$`);
+/** Obsolete asctime: "Sun Nov  6 08:49:37 1994". */
+const ASCTIME = new RegExp(`^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) ${MONTH} ( \\d|\\d{2}) ${TIME} (\\d{4})$`);
+
+function utcDate(year: number, month: string, day: number, h: number, m: number, sec: number): Date | null {
+  const mon = MONTHS.indexOf(month);
+  if (h > 23 || m > 59 || sec > 60) return null;
+  const date = new Date(Date.UTC(year, mon, day, h, m, Math.min(sec, 59)));
+  // Reject impossible calendar dates (e.g. 31 Feb), which Date.UTC would roll over.
+  return date.getUTCMonth() === mon && date.getUTCDate() === day ? date : null;
+}
+
+/**
+ * Parse a `Retry-After` value strictly (RFC 9110 §10.2.3): delta-seconds (digits only)
+ * or an HTTP-date in any of its three formats. Anything else, including negative or
+ * fractional numbers, returns null and the normal schedule applies. Whether a date is
+ * already past is decided later, against the database clock.
+ */
+export function parseRetryAfter(raw: string | null | undefined, nowMs: number = Date.now()): RetryAfter | null {
+  const v = raw?.trim();
+  if (!v) return null;
+  if (/^\d+$/.test(v)) return { kind: "seconds", seconds: Number(v) };
+  let m = IMF_FIXDATE.exec(v);
+  if (m) return dateOrNull(utcDate(Number(m[3]), m[2]!, Number(m[1]), Number(m[4]), Number(m[5]), Number(m[6])));
+  m = RFC_850.exec(v);
+  if (m) {
+    // Two-digit year: the most recent year with those digits that is not more than 50 years ahead.
+    const thisYear = new Date(nowMs).getUTCFullYear();
+    let year = Math.floor(thisYear / 100) * 100 + Number(m[3]);
+    if (year > thisYear + 50) year -= 100;
+    return dateOrNull(utcDate(year, m[2]!, Number(m[1]), Number(m[4]), Number(m[5]), Number(m[6])));
+  }
+  m = ASCTIME.exec(v);
+  if (m) return dateOrNull(utcDate(Number(m[6]), m[1]!, Number(m[2]!.trim()), Number(m[3]), Number(m[4]), Number(m[5])));
+  return null;
+}
+
+function dateOrNull(d: Date | null): RetryAfter | null {
+  return d && !Number.isNaN(d.getTime()) ? { kind: "date", at: d } : null;
+}
+
+/** The receiver's Retry-After, when this status is one that honors it. */
+export function retryAfterFor(status: number | null, raw: string | null | undefined): RetryAfter | null {
+  return status !== null && RETRY_AFTER_STATUSES.has(status) ? parseRetryAfter(raw) : null;
+}
+
 /** A response that should never be retried: the receiver says the endpoint is gone. */
 export function isPermanentFailure(status: number | null): boolean {
   return status === 410;

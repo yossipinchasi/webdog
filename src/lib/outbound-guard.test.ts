@@ -93,6 +93,8 @@ before(async () => {
         res.writeHead(302, { location: "http://169.254.169.254/latest/meta-data/" }).end();
       } else if (req.url === "/slow") {
         setTimeout(() => res.writeHead(200).end("late"), 2_000);
+      } else if (req.url === "/busy") {
+        res.writeHead(503, { "retry-after": "120" }).end("busy");
       } else if (req.url === "/big") {
         res.writeHead(500).end("x".repeat(200_000));
       } else {
@@ -126,8 +128,13 @@ test("post: allowed targets are delivered; status and body are returned", async 
     allowPrivate: true,
     headers: { "content-type": "application/json" },
   });
-  assert.deepEqual(res, { status: 200, body: '{"ok":true}' });
+  assert.deepEqual(res, { status: 200, body: '{"ok":true}', retryAfter: null });
   assert.equal(received.at(-1)?.body, '{"a":1}');
+});
+
+test("post: the Retry-After header is returned as sent", async () => {
+  const res = await postJson(`http://127.0.0.1:${port}/busy`, "{}", { timeoutMs: 2_000, allowPrivate: true });
+  assert.deepEqual(res, { status: 503, body: "busy", retryAfter: "120" });
 });
 
 test("post: redirects are not followed", async () => {
