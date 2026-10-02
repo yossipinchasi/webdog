@@ -9,6 +9,9 @@
  * failures on the backoff in `watcher-events.ts`. A crash mid-attempt only means the
  * lease expires and the row is retried, so delivery is at-least-once; receivers
  * dedupe on the event id.
+ *
+ * Deliveries of revoked API clients are never claimed, and `canceled` rows (set by
+ * revocation) are never moved back to pending; see api-client-revocation.ts.
  */
 
 import { and, asc, eq, inArray, lte, sql } from "drizzle-orm";
@@ -17,6 +20,7 @@ import * as schema from "./db/schema";
 import { newId } from "./ids";
 import { WEBHOOK_USER_AGENT } from "./product-info";
 import { OutboundBlockedError, postJson } from "./outbound-guard";
+import { deliveryClientNotRevoked, REVOKED_DELIVERY_ERROR } from "./api-client-revocation";
 import {
   isPermanentFailure,
   nextRetryDelayMs,
@@ -111,6 +115,7 @@ async function claimDue(nowMs: number, limit: number, ids?: string[]): Promise<C
         and(
           eq(schema.webhookDelivery.status, "pending"),
           lte(schema.webhookDelivery.nextAttemptAt, new Date(nowMs)),
+          deliveryClientNotRevoked,
           ids ? inArray(schema.webhookDelivery.id, ids) : undefined,
         ),
       )
@@ -130,13 +135,20 @@ async function claimDue(nowMs: number, limit: number, ids?: string[]): Promise<C
   });
 }
 
-async function recordOutcome(row: Claimed, result: SendResult, secretMissing: boolean): Promise<"delivered" | "retrying" | "failed"> {
+type Outcome = "delivered" | "retrying" | "failed" | "canceled";
+
+/**
+ * Record an attempt. Only a `pending` row moves to pending/failed, so a delivery canceled
+ * while its request was in flight stays canceled; a request that did succeed is recorded
+ * as delivered either way, since it was.
+ */
+async function recordOutcome(row: Claimed, result: SendResult, secretMissing: boolean): Promise<Outcome> {
   const nowMs = Date.now();
   if (result.ok) {
     await db
       .update(schema.webhookDelivery)
       .set({ status: "delivered", deliveredAt: new Date(nowMs), lastStatusCode: result.statusCode, lastError: null })
-      .where(eq(schema.webhookDelivery.id, row.id));
+      .where(and(eq(schema.webhookDelivery.id, row.id), inArray(schema.webhookDelivery.status, ["pending", "canceled"])));
     return "delivered";
   }
   const permanent = secretMissing || result.blocked || isPermanentFailure(result.statusCode);
@@ -149,18 +161,27 @@ async function recordOutcome(row: Claimed, result: SendResult, secretMissing: bo
       lastStatusCode: result.statusCode,
       lastError: result.error,
     })
-    .where(eq(schema.webhookDelivery.id, row.id));
+    .where(and(eq(schema.webhookDelivery.id, row.id), eq(schema.webhookDelivery.status, "pending")));
   return delay === null ? "failed" : "retrying";
 }
 
-export type DeliveryRunResult = { attempted: number; delivered: number; retrying: number; failed: number };
+/** Cancel a claimed row whose client was revoked after it was claimed (never sent). */
+async function cancelRevoked(row: Claimed): Promise<Outcome> {
+  await db
+    .update(schema.webhookDelivery)
+    .set({ status: "canceled", lastError: REVOKED_DELIVERY_ERROR })
+    .where(and(eq(schema.webhookDelivery.id, row.id), eq(schema.webhookDelivery.status, "pending")));
+  return "canceled";
+}
+
+export type DeliveryRunResult = { attempted: number; delivered: number; retrying: number; failed: number; canceled: number };
 
 /**
  * Attempt every due delivery (or only `ids`, e.g. just-created ones). Safe to run
  * from several processes at once.
  */
 export async function deliverDueWebhooks(options: { ids?: string[]; batchSize?: number } = {}): Promise<DeliveryRunResult> {
-  const totals: DeliveryRunResult = { attempted: 0, delivered: 0, retrying: 0, failed: 0 };
+  const totals: DeliveryRunResult = { attempted: 0, delivered: 0, retrying: 0, failed: 0, canceled: 0 };
   if (options.ids && options.ids.length === 0) return totals;
   const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
 
@@ -168,20 +189,20 @@ export async function deliverDueWebhooks(options: { ids?: string[]; batchSize?: 
     const claimed = await claimDue(Date.now(), batchSize, options.ids);
     if (claimed.length === 0) break;
 
+    // Read right before sending, so a revocation committed after the claim still stops the send.
     const clientIds = [...new Set(claimed.map((c) => c.apiClientId).filter((x): x is string => Boolean(x)))];
-    const secrets = new Map(
-      clientIds.length
-        ? (
-            await db
-              .select({ id: schema.apiClient.id, secret: schema.apiClient.webhookSecret })
-              .from(schema.apiClient)
-              .where(inArray(schema.apiClient.id, clientIds))
-          ).map((r) => [r.id, r.secret])
-        : [],
-    );
+    const clients = clientIds.length
+      ? await db
+          .select({ id: schema.apiClient.id, secret: schema.apiClient.webhookSecret, revokedAt: schema.apiClient.revokedAt })
+          .from(schema.apiClient)
+          .where(inArray(schema.apiClient.id, clientIds))
+      : [];
+    const secrets = new Map(clients.filter((c) => c.revokedAt === null).map((c) => [c.id, c.secret]));
+    const revoked = new Set(clients.filter((c) => c.revokedAt !== null).map((c) => c.id));
 
     const outcomes = await Promise.all(
       claimed.map(async (row) => {
+        if (row.apiClientId && revoked.has(row.apiClientId)) return cancelRevoked(row);
         const secret = row.apiClientId ? secrets.get(row.apiClientId) : undefined;
         const result: SendResult = secret
           ? await postSignedWebhook({
@@ -204,10 +225,15 @@ export async function deliverDueWebhooks(options: { ids?: string[]; batchSize?: 
   return totals;
 }
 
-/** Put a failed (or stuck) delivery back in the queue with a fresh set of attempts. */
-export async function requeueDelivery(id: string): Promise<void> {
-  await db
+/**
+ * Put a failed delivery back in the queue with a fresh set of attempts. Returns false
+ * (and changes nothing) unless it is still failed and its API client is not revoked.
+ */
+export async function requeueDelivery(id: string): Promise<boolean> {
+  const requeued = await db
     .update(schema.webhookDelivery)
     .set({ status: "pending", attempts: 0, nextAttemptAt: new Date(), deliveredAt: null })
-    .where(eq(schema.webhookDelivery.id, id));
+    .where(and(eq(schema.webhookDelivery.id, id), eq(schema.webhookDelivery.status, "failed"), deliveryClientNotRevoked))
+    .returning({ id: schema.webhookDelivery.id });
+  return requeued.length === 1;
 }

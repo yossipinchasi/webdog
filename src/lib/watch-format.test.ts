@@ -6,6 +6,7 @@ import {
   createWatchSchema,
   decodeCursor,
   encodeCursor,
+  listDeliveriesQuerySchema,
   listWatchesQuerySchema,
   toWatchEventJson,
   toWatchJson,
@@ -261,6 +262,19 @@ test("delivery JSON: next attempt only while pending", () => {
   assert.deepEqual([done.nextAttemptAt, done.deliveredAt], [null, "2026-10-01T00:02:01.000Z"]);
   assert.ok(!("payload" in done), "payload not echoed back");
   assert.equal(done.url, "https://platform.test/hook/", "delivery URL is masked");
+  const canceled = toWebhookDeliveryJson({ ...base, status: "canceled", lastError: "Canceled: the API client was revoked." });
+  assert.deepEqual([canceled.status, canceled.nextAttemptAt], ["canceled", null], "canceled is terminal: no next attempt");
+  assert.equal(listDeliveriesQuerySchema.parse({ status: "canceled" }).status, "canceled");
+});
+
+test("revoked API client: status is revoked, ahead of every other state", () => {
+  for (const t of [target(), target({ enabled: false }), target({ enabled: false, triggeredAt: new Date() }), target({ lastError: "x" })]) {
+    assert.equal(watchStatus(t, true), "revoked");
+  }
+  assert.equal(watchStatus(target(), false), "active");
+  const site = { id: "web_1", url: "https://x.test" };
+  assert.equal(toWatchJson(target(), site, null, true).status, "revoked");
+  assert.equal(toWatchJson(target(), site, null).status, "active", "not revoked by default");
 });
 
 test("callback URLs are masked in API output, omitted from webhook payloads, and never accepted masked", () => {

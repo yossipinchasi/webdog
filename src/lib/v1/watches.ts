@@ -15,15 +15,18 @@ import { toWatchJson, type WatchJson } from "./watch-format";
 const watchColumns = {
   target: schema.target,
   website: { id: schema.website.id, url: schema.website.url },
+  clientRevokedAt: schema.apiClient.revokedAt,
 };
 
 type WatchRow = {
   target: typeof schema.target.$inferSelect;
   website: { id: string; url: string };
+  /** Set when the API client that created the watch was revoked: the watch no longer runs. */
+  clientRevokedAt: Date | null;
 };
 
 export function rowToWatchJson(row: WatchRow): WatchJson {
-  return toWatchJson(row.target, row.website, row.target.callbackUrl);
+  return toWatchJson(row.target, row.website, row.target.callbackUrl, row.clientRevokedAt !== null);
 }
 
 /** Watches owned by `ownerId` matching `where`, newest first. */
@@ -32,6 +35,7 @@ export async function selectWatches(ownerId: string, where: SQL | undefined, lim
     .select(watchColumns)
     .from(schema.target)
     .innerJoin(schema.website, eq(schema.website.id, schema.target.websiteId))
+    .leftJoin(schema.apiClient, eq(schema.apiClient.id, schema.target.apiClientId))
     .where(and(eq(schema.website.userId, ownerId), where))
     .orderBy(desc(schema.target.createdAt), desc(schema.target.id))
     .limit(limit);

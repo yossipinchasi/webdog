@@ -392,7 +392,8 @@ export const webhookDelivery = pgTable(
     url: encryptedText("webhookDelivery.url")("url").notNull(),
     /** Exact JSON body that is signed and sent (contains no credentials). */
     payload: text("payload").notNull(),
-    status: text("status", { enum: ["pending", "delivered", "failed"] }).notNull().default("pending"),
+    /** `canceled`: terminal, never sent (its API client was revoked); see api-client-revocation.ts. */
+    status: text("status", { enum: ["pending", "delivered", "failed", "canceled"] }).notNull().default("pending"),
     attempts: integer("attempts").notNull().default(0),
     /** Next attempt (pending), or lease expiry while an attempt is in flight. */
     nextAttemptAt: timestamp("nextAttemptAt", { withTimezone: true, precision: 3 }).notNull().defaultNow(),
@@ -407,6 +408,8 @@ export const webhookDelivery = pgTable(
   (t) => ({
     byDue: index("webhook_delivery_due_idx").on(t.status, t.nextAttemptAt),
     byTarget: index("webhook_delivery_target_idx").on(t.targetId, t.createdAt),
+    /** Revocation cancels a client's pending deliveries. */
+    byClientStatus: index("webhook_delivery_client_status_idx").on(t.apiClientId, t.status),
   }),
 );
 

@@ -2,17 +2,18 @@
 // Manage Watcher API (/api/v1) keys. A key acts as the account it is created for.
 //   npm run api-keys -- create --email owner@example.com --name "My platform"
 //   npm run api-keys -- list [--email owner@example.com]
-//   npm run api-keys -- revoke <apiClientId>
+//   npm run api-keys -- revoke <apiClientId>   (stops its watches, cancels pending deliveries)
 //   npm run api-keys -- webhook-secret <apiClientId> [--rotate]
 // Env: DATABASE_URL.
 
 import "dotenv/config";
 import { randomBytes } from "node:crypto";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { db } from "../src/lib/db";
 import * as schema from "../src/lib/db/schema";
 import { newId } from "../src/lib/ids";
 import { generateApiKey } from "../src/lib/api-keys";
+import { revokeApiClient } from "../src/lib/api-client-revocation";
 
 function newWebhookSecret(): string {
   return `whsec_${randomBytes(32).toString("hex")}`;
@@ -71,12 +72,14 @@ async function list(args: string[]) {
 async function revoke(args: string[]) {
   const id = args[0];
   if (!id) throw new Error("Usage: revoke <apiClientId>");
-  const res = await db
-    .update(schema.apiClient)
-    .set({ revokedAt: new Date() })
-    .where(and(eq(schema.apiClient.id, id), isNull(schema.apiClient.revokedAt)))
-    .returning({ id: schema.apiClient.id });
-  console.log(res.length ? `Revoked ${id}.` : `No active API client ${id}.`);
+  const res = await revokeApiClient(id);
+  if (!res.found) throw new Error(`No API client ${id}.`);
+  console.log(
+    res.alreadyRevoked
+      ? `${id} was already revoked (${res.revokedAt.toISOString()}).`
+      : `Revoked ${id}. Its key no longer authenticates and its watches no longer run (they and their history are kept).`,
+  );
+  if (res.canceledDeliveries > 0) console.log(`Canceled ${res.canceledDeliveries} pending webhook deliveries.`);
 }
 
 async function webhookSecret(args: string[]) {

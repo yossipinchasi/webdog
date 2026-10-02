@@ -30,7 +30,7 @@ async function deliverWebhooks() {
     const r = await deliverDueWebhooks();
     if (r.attempted > 0) {
       console.log(
-        `[worker] webhooks: ${r.attempted} attempted — ${r.delivered} delivered, ${r.retrying} retrying, ${r.failed} failed`,
+        `[worker] webhooks: ${r.attempted} attempted — ${r.delivered} delivered, ${r.retrying} retrying, ${r.failed} failed${r.canceled ? `, ${r.canceled} canceled (client revoked)` : ""}`,
       );
     }
   } catch (err) {
