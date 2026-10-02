@@ -78,6 +78,13 @@
       "when": 1790902522071,
       "tag": "0010_webhook_delivery_retention",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1790905560596,
+      "tag": "0011_worker_heartbeat",
+      "breakpoints": true
     }
   ]
 }

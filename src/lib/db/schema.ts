@@ -492,6 +492,24 @@ export const apiRateLimit = pgTable(
   }),
 );
 
+/**
+ * Worker health (see `worker-health.ts`): one row per worker loop ("checks", "webhooks"),
+ * updated by every worker instance with database-clock times. Fixed size: no history.
+ */
+export const workerHeartbeat = pgTable("workerHeartbeat", {
+  /** "checks" (scheduled website checks) or "webhooks" (delivery and retries). */
+  loop: text("loop").primaryKey(),
+  /** When a pass last started (checks only). */
+  lastStartedAt: timestamp("lastStartedAt", { withTimezone: true, precision: 3 }),
+  /** When a pass last completed successfully: the heartbeat. */
+  lastSuccessAt: timestamp("lastSuccessAt", { withTimezone: true, precision: 3 }),
+  /** When a pass last failed as a whole (e.g. the database was unreachable). */
+  lastFailureAt: timestamp("lastFailureAt", { withTimezone: true, precision: 3 }),
+  /** The next successful pass is expected by then; later means the loop is stale. */
+  dueBy: timestamp("dueBy", { withTimezone: true, precision: 3 }),
+  updatedAt: timestamp("updatedAt", { withTimezone: true, precision: 3 }).notNull().defaultNow(),
+});
+
 export type User = typeof user.$inferSelect;
 export type ApiClient = typeof apiClient.$inferSelect;
 export type UserNotificationSettings = typeof userNotificationSettings.$inferSelect;
