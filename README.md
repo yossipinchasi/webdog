@@ -50,6 +50,7 @@ Paste any URL and webdog will:
 - [Project structure](#project-structure)
 - [Tech stack](#tech-stack)
 - [Built using Context.dev](#built-using-contextdev)
+- [Continuous integration](#continuous-integration)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -563,12 +564,23 @@ const { markdown } = await client.web.webScrapeMd({ url: "https://openai.com" })
 
 ---
 
+## Continuous integration
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on every pull request, every push to `main`, and on demand. It has no secrets and only read access; it never deploys.
+
+- **checks**: `npm ci`, a scan for credential-shaped strings in the repository, lint, typecheck, unit tests, and the production build.
+- **integration**: a Postgres 18 service, then `e2e/ci.sh`: migrations from old schemas (pre-signed-webhooks, pre-encryption, pre-retention) to current, migration re-runs that must change nothing, the full end-to-end suite against `next start` and the worker with local fakes for every outside service, and a scan of the database and logs for plaintext credentials. See [`e2e/README.md`](./e2e/README.md).
+
+A newer commit cancels the superseded run; each job has a timeout. Run the same suite locally with `npm run db:up && npm run build && bash e2e/ci.sh`.
+
+---
+
 ## Contributing
 
 PRs welcome ❤️
 
 1. Fork and clone the repo, then follow the [Quick start](#quick-start).
-2. Make your change. Keep `npm run lint` and `npm run typecheck` clean.
+2. Make your change. Keep `npm run lint` and `npm run typecheck` clean; CI also runs the unit tests, build, and the integration suite.
 3. If you change the schema in `src/lib/db/schema.ts`, run `npm run db:generate` and commit the migration.
 4. Open a PR with a short description of the why.
 
