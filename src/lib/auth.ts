@@ -2,6 +2,7 @@ import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { db } from "./db";
 import * as schema from "./db/schema";
+import { joinInvitingAccount, requireInviteForNewUser } from "./invite-signup";
 
 /** Trim slashes; keep a single usable origin-style base for Better Auth. */
 function normalizeAuthBase(urlStr: string): string {
@@ -139,8 +140,10 @@ const NEXT_BUILD_AUTH_PLACEHOLDER =
   "next-build-placeholder-not-used-at-runtime-min-32-chars!!";
 
 /**
- * Better Auth requires a non-default `secret`. Hosted production deploys
- * require an explicit `BETTER_AUTH_SECRET`; local development keeps a dev-only fallback.
+ * Better Auth signs sessions with `secret`. Production (any host, not just known platforms)
+ * requires an explicit `BETTER_AUTH_SECRET`: the development fallback below is public in this
+ * repository and must never sign real sessions. `next build` gets a placeholder (never used
+ * at runtime).
  */
 function resolveAuthSecret(): string {
   const fromEnv = process.env.BETTER_AUTH_SECRET?.trim();
@@ -150,11 +153,7 @@ function resolveAuthSecret(): string {
     return NEXT_BUILD_AUTH_PLACEHOLDER;
   }
 
-  const isHostedProd =
-    process.env.NODE_ENV === "production" &&
-    Boolean(process.env.RAILWAY_PROJECT_ID ?? process.env.VERCEL ?? process.env.CF_PAGES ?? process.env.NETLIFY);
-
-  if (isHostedProd) {
+  if (process.env.NODE_ENV === "production") {
     throw new Error(
       "BETTER_AUTH_SECRET must be set in production. Generate one with: openssl rand -base64 32",
     );
@@ -201,6 +200,20 @@ export const auth = betterAuth({
   emailAndPassword: {
     enabled: true,
     minPasswordLength: 8,
+  },
+  // Invite-only (v1): every user creation needs an account invite (or the operator CLI).
+  // See invite-signup.ts.
+  databaseHooks: {
+    user: {
+      create: {
+        before: async (_user, ctx) => {
+          await requireInviteForNewUser(ctx);
+        },
+        after: async (user, ctx) => {
+          await joinInvitingAccount(user.id, ctx);
+        },
+      },
+    },
   },
   session: {
     expiresIn: 60 * 60 * 24 * 30, // 30 days

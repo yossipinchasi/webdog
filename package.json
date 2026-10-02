@@ -18,6 +18,7 @@
     "api-keys": "tsx scripts/api-keys.ts",
     "secrets": "tsx scripts/secrets.ts",
     "legacy-webhooks": "tsx scripts/legacy-webhooks.ts",
+    "users": "tsx scripts/users.ts",
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
     "db:check": "tsx scripts/check-db.ts",
@@ -63,7 +64,7 @@
       "esbuild": "0.25.12"
     },
     "next": {
-      "postcss": "8.5.10"
+      "postcss": "8.5.28"
     }
   }
 }

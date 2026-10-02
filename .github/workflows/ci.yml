@@ -35,6 +35,10 @@ jobs:
         run: npm ci
       - name: Secret scan (credential-shaped strings in the repository)
         run: bash e2e/repo-secret-scan.sh
+      - name: Dependency audit (no high or critical advisories in production dependencies)
+        # Uses npm's public advisory database (free). New advisories can appear at any time,
+        # so this can start failing without a code change; that is the point of the check.
+        run: npm audit --omit=dev --audit-level=high
       - name: Lint
         run: npm run lint
       - name: Typecheck
