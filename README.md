@@ -346,6 +346,8 @@ Delivery is **at-least-once**: events are written to an outbox in the same trans
 **Delivery history is kept for 30 days** (`WEBHOOK_DELIVERY_RETENTION_DAYS`) after each delivery finished. The worker deletes, at most hourly, `delivered`, `failed`, and `canceled` deliveries that finished longer ago than that; age counts from when a delivery finished, not when it was created, so one that failed yesterday after a month of retries is kept for the full period. Deliveries that are still `pending` (new, retrying, or being sent) are never deleted. Once deleted, a delivery no longer appears in `GET /watches/:id/deliveries` and can't be retried; the watch's events (`GET /watches/:id/events`) are not affected. `off` keeps all history; an invalid value logs a warning and uses 30.
 
 > Watches created before signed webhooks were routed through an unsigned `webdog_ai.new_alerts` WEBHOOK destination. The migration moves their `callbackUrl` onto the watch, so they now receive the signed events above instead. Dashboard WEBHOOK destinations are unchanged and still receive the `webdog_ai.new_alerts` payload.
+>
+> The migration left those destinations (named `API webhook (<host>)`) in Settings, unused. `npm run legacy-webhooks` lists them and `npm run legacy-webhooks -- --apply` removes them. It only removes a destination named exactly `API webhook (<host of its URL>)` that was never edited, came from an account with an API key, and no monitor or website uses; it keeps everything else and says why. It is safe to re-run.
 
 #### Rate limits
 
@@ -463,6 +465,7 @@ Set `BETTER_AUTH_URL` (or `NEXT_PUBLIC_APP_URL`) to your public origin and `BETT
 | `npm run worker` | Run the scrape/diff worker on the cron schedule |
 | `npm run worker:once` | Single worker pass, then exit (handy for debugging) |
 | `npm run api-keys -- <create\|list\|revoke\|webhook-secret>` | Manage Watcher API keys and webhook secrets |
+| `npm run legacy-webhooks [-- --apply]` | List (default) or remove the unused `API webhook (…)` destinations left by the pre-signed-webhooks API |
 | `npm run secrets -- <encrypt [--dry-run]\|verify>` | Encrypt remaining plaintext credentials / check that every stored credential decrypts |
 | `npm run build` / `npm run start` | Production build / serve |
 | `npm run db:up` / `npm run db:down` | Start / stop local Postgres via Docker Compose |
