@@ -117,9 +117,14 @@ export function hoursToMinutes(hours: number): number {
   return Math.round(hours * 60);
 }
 
-export type WatchStatus = "triggered" | "paused" | "pending" | "error" | "active";
+/** `revoked`: the API client that created the watch was revoked; the watch no longer runs. */
+export type WatchStatus = "revoked" | "triggered" | "paused" | "pending" | "error" | "active";
 
-export function watchStatus(t: Pick<Target, "enabled" | "lastError" | "lastCheckedAt" | "triggeredAt">): WatchStatus {
+export function watchStatus(
+  t: Pick<Target, "enabled" | "lastError" | "lastCheckedAt" | "triggeredAt">,
+  clientRevoked = false,
+): WatchStatus {
+  if (clientRevoked) return "revoked";
   if (!t.enabled) return t.triggeredAt ? "triggered" : "paused";
   if (t.lastError) return "error";
   if (!t.lastCheckedAt) return "pending";
@@ -185,13 +190,18 @@ export function toWebhookWatchJson(t: Target, website: Pick<Website, "id" | "url
 }
 
 /** `callbackUrl` should be the stored (decrypted) URL; it is masked in the result. */
-export function toWatchJson(t: Target, website: Pick<Website, "id" | "url">, callbackUrl: string | null): WatchJson {
+export function toWatchJson(
+  t: Target,
+  website: Pick<Website, "id" | "url">,
+  callbackUrl: string | null,
+  clientRevoked = false,
+): WatchJson {
   return {
     id: t.id,
     type: WATCH_TYPE_BY_TARGET_KIND[t.kind],
     url: t.pageUrl ?? website.url,
     intent: t.watchNote,
-    status: watchStatus(t),
+    status: watchStatus(t, clientRevoked),
     enabled: t.enabled,
     intervalMinutes: hoursToMinutes(t.checkIntervalHours),
     callbackUrl: maskUrl(callbackUrl),
@@ -300,7 +310,7 @@ export type WebhookDeliveryJson = {
   eventId: string;
   eventType: string;
   url: string;
-  status: "pending" | "delivered" | "failed";
+  status: "pending" | "delivered" | "failed" | "canceled";
   attempts: number;
   lastStatusCode: number | null;
   lastError: string | null;
@@ -330,7 +340,7 @@ export function toWebhookDeliveryJson(d: WebhookDelivery): WebhookDeliveryJson {
 
 export const listDeliveriesQuerySchema = z
   .object({
-    status: z.enum(["pending", "delivered", "failed"]).optional(),
+    status: z.enum(["pending", "delivered", "failed", "canceled"]).optional(),
     limit,
     cursor: z.string().optional(),
   })

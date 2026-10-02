@@ -247,6 +247,14 @@ npm run api-keys -- webhook-secret <apiClientId> [--rotate]
 
 Send it on every request as `Authorization: Bearer wk_…`.
 
+**Revoking a key** stops everything it created, without deleting anything:
+
+- The key gets `401` on every request.
+- Its watches no longer run: not on schedule, not through "Run now" in the dashboard, not through `POST /check`. No new events or webhooks are produced for them.
+- Its `pending` webhook deliveries become `canceled` (terminal; `lastError` says the client was revoked) and are never sent. A request already on the network at that moment cannot be recalled: if it succeeds it is recorded as `delivered`, otherwise it stays `canceled`.
+- Watches, events, snapshots and delivery history are kept. Other keys of the same account still see these watches with `status: "revoked"` and can read their events and deliveries or delete them; checking, updating, or retrying a delivery returns `409 watch_revoked`. The dashboard shows them likewise and refuses to run or edit them.
+- Revoking is idempotent (the original revocation time is kept). There is no un-revoke: create a new key and new watches.
+
 ### Endpoints
 
 | Method & path | What it does |
@@ -256,7 +264,7 @@ Send it on every request as `Authorization: Bearer wk_…`.
 | `GET /api/v1/watches/:id` | Get one watch |
 | `PATCH /api/v1/watches/:id` | Update `intent`, `intervalMinutes`, `enabled`, `callbackUrl`, `externalUserId`, `externalRef`, `metadata`, `condition`, `triggerMode`, `aiTriageEnabled`, `aiSummaryEnabled` (send `null` to clear) |
 | `DELETE /api/v1/watches/:id` | Delete a watch (`204`) |
-| `GET /api/v1/watches/:id/deliveries` | Webhook delivery history: status (`pending` / `delivered` / `failed`), attempts, last status code and error. Filter `status`; paging `limit`, `cursor` |
+| `GET /api/v1/watches/:id/deliveries` | Webhook delivery history: status (`pending` / `delivered` / `failed` / `canceled`), attempts, last status code and error. Filter `status`; paging `limit`, `cursor` |
 | `POST /api/v1/deliveries/:id/retry` | Re-send a `failed` delivery with a fresh set of attempts |
 | `POST /api/v1/webhooks/test` | Send one signed `webhook.test` event to `{"url": "…"}` to check your receiver |
 | `POST /api/v1/watches/:id/check` | Check now, ignoring the schedule (`409` if a check of that website is already running) |
@@ -336,7 +344,7 @@ Delivery is **at-least-once**: events are written to an outbox in the same trans
 
 > Watches created before signed webhooks were routed through an unsigned `webdog_ai.new_alerts` WEBHOOK destination. The migration moves their `callbackUrl` onto the watch, so they now receive the signed events above instead. Dashboard WEBHOOK destinations are unchanged and still receive the `webdog_ai.new_alerts` payload.
 
-Errors always look like `{"error": {"code": "…", "message": "…"}}` (`401 unauthorized`, `404 not_found`, `409 check_in_progress` / `external_ref_conflict`, `422 validation_failed` / `invalid_url` / `invalid_cursor` / `intent_required` / `ai_not_configured` / `condition_not_supported` / `callback_url_not_allowed`, `403 monitor_limit_reached`).
+Errors always look like `{"error": {"code": "…", "message": "…"}}` (`401 unauthorized`, `404 not_found`, `409 check_in_progress` / `external_ref_conflict` / `watch_revoked` / `delivery_not_failed`, `422 validation_failed` / `invalid_url` / `invalid_cursor` / `intent_required` / `ai_not_configured` / `condition_not_supported` / `callback_url_not_allowed`, `403 monitor_limit_reached`).
 
 ---
 

@@ -57,6 +57,13 @@
       "when": 1790805305788,
       "tag": "0007_encrypt_secrets",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1790900239034,
+      "tag": "0008_revoked_api_clients",
+      "breakpoints": true
     }
   ]
 }

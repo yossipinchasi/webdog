@@ -1,0 +1,1 @@
+CREATE INDEX "webhook_delivery_client_status_idx" ON "webhookDelivery" USING btree ("apiClientId","status");

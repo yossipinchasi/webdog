@@ -9,6 +9,7 @@ import { badRequest, notFound, parseJson, requireApiUserWithWriteOwner } from "@
 import { websiteOwnerAccessible } from "@/lib/account-access";
 import { computeNextCheckDueAfterSuccess } from "@/lib/scraper";
 import { monitorLimitError } from "@/lib/account-monitor-limits";
+import { isApiClientRevoked } from "@/lib/api-client-revocation";
 
 async function loadForWrite(sessionUserId: string, ownerId: string, targetId: string) {
   const rows = await db
@@ -69,6 +70,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
   const owned = await loadForWrite(user.id, ownerId, id);
   if (!owned) return notFound("Target not found");
+  if (await isApiClientRevoked(owned.target.apiClientId)) {
+    return NextResponse.json({ error: "This monitor was created through an API key that has been revoked, so it no longer runs. It can be viewed or deleted." }, { status: 409 });
+  }
 
   const parsed = await parseJson(req, patchSchema);
   if (parsed.response) return parsed.response;

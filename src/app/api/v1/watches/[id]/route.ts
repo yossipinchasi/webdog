@@ -4,7 +4,7 @@ import { db } from "@/lib/db";
 import * as schema from "@/lib/db/schema";
 import { monitorLimitError } from "@/lib/account-monitor-limits";
 import { computeNextCheckDueAfterSuccess } from "@/lib/scraper";
-import { authenticateApiClient, isUniqueViolation, parseV1Json, v1Error } from "@/lib/v1/http";
+import { authenticateApiClient, isUniqueViolation, parseV1Json, v1Error, watchRevokedError } from "@/lib/v1/http";
 import { minutesToHours, updateWatchSchema } from "@/lib/v1/watch-format";
 import { accountAiConfig, loadWatch, rowToWatchJson } from "@/lib/v1/watches";
 import { conditionConfigError, parseStoredCondition } from "@/lib/watch-conditions";
@@ -30,6 +30,7 @@ export async function PATCH(req: Request, { params }: Params) {
 
   const row = await loadWatch(ownerId, id);
   if (!row) return notFound();
+  if (row.clientRevokedAt) return watchRevokedError();
 
   const parsed = await parseV1Json(req, updateWatchSchema);
   if (parsed.response) return parsed.response;

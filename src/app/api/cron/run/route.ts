@@ -6,6 +6,7 @@ import * as schema from "@/lib/db/schema";
 import { getApiUser, notFound, parseJson } from "@/lib/api";
 import { websiteOwnerAccessible } from "@/lib/account-access";
 import { runWebsiteChecks } from "@/lib/scraper";
+import { isApiClientRevoked } from "@/lib/api-client-revocation";
 
 const bodySchema = z.object({
   websiteId: z.string().min(1),
@@ -29,11 +30,14 @@ export async function POST(req: Request) {
 
   if (parsed.data.targetId) {
     const [target] = await db
-      .select({ id: schema.target.id })
+      .select({ id: schema.target.id, apiClientId: schema.target.apiClientId })
       .from(schema.target)
       .where(and(eq(schema.target.id, parsed.data.targetId), eq(schema.target.websiteId, website.id)))
       .limit(1);
     if (!target) return notFound("Target not found");
+    if (await isApiClientRevoked(target.apiClientId)) {
+      return NextResponse.json({ error: "This monitor was created through an API key that has been revoked, so it no longer runs. It can be viewed or deleted." }, { status: 409 });
+    }
   }
 
   const result = await runWebsiteChecks(website.id, {

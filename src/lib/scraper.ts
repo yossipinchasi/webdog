@@ -30,6 +30,7 @@ import {
 } from "./ai-change-summary";
 import { triageAlert } from "./ai-alert-triage";
 import { withWebsiteCheckLock } from "./website-check-lock";
+import { lockRevokedClientIds, targetClientNotRevoked } from "./api-client-revocation";
 import { parseStoredCondition, type ConditionOutcome } from "./watch-conditions";
 import { evaluateChangeCondition } from "./watch-condition-eval";
 import { deliverDueWebhooks, enqueueWebhook, watchErrorThreshold } from "./webhook-outbox";
@@ -403,16 +404,17 @@ async function runWebsiteChecksLocked(
 
   const contextApiKey = userSettings?.contextDevApiKey?.trim() || null;
 
+  // Watches of revoked API clients never run (scheduled, "Run now", or manual).
   const targets = options?.targetId
     ? await db
         .select()
         .from(schema.target)
-        .where(and(eq(schema.target.websiteId, websiteId), eq(schema.target.id, options.targetId)))
+        .where(and(eq(schema.target.websiteId, websiteId), eq(schema.target.id, options.targetId), targetClientNotRevoked))
         .limit(1)
     : await db
         .select()
         .from(schema.target)
-        .where(and(eq(schema.target.websiteId, websiteId), eq(schema.target.enabled, true)));
+        .where(and(eq(schema.target.websiteId, websiteId), eq(schema.target.enabled, true), targetClientNotRevoked));
 
   const cache: SiteScrapeCache = {
     markdown: new Map(),
@@ -421,6 +423,8 @@ async function runWebsiteChecksLocked(
     contextApiKey,
   };
   const alerts: AlertInsert[] = [];
+  /** Ids of alerts actually recorded (a revoked API client's changes are dropped). */
+  const committed = new Set<string>();
   const checkedTargets: Target[] = [];
   let errors = 0;
   /** Outbox rows created by this run, attempted right away at the end (the worker retries failures). */
@@ -475,8 +479,14 @@ async function runWebsiteChecksLocked(
         };
         await tx.update(schema.target).set(updates).where(eq(schema.target.id, t.id));
 
-        // A watch that had reported `watch.error` is healthy again.
-        if (fresh.callbackUrl && fresh.apiClientId && fresh.consecutiveFailures >= errorThreshold) {
+        // A watch that had reported `watch.error` is healthy again (unless its client was
+        // revoked while this check ran: then no event).
+        if (
+          fresh.callbackUrl &&
+          fresh.apiClientId &&
+          fresh.consecutiveFailures >= errorThreshold &&
+          !(await lockRevokedClientIds(tx, [fresh.apiClientId])).has(fresh.apiClientId)
+        ) {
           newDeliveryIds.push(
             await enqueueWebhook(tx, {
               targetId: fresh.id,
@@ -514,7 +524,12 @@ async function runWebsiteChecksLocked(
           await tx.update(schema.target).set(updates).where(eq(schema.target.id, t.id));
 
           // Report once per failure streak, when it reaches the threshold.
-          if (fresh.callbackUrl && fresh.apiClientId && updates.consecutiveFailures === errorThreshold) {
+          if (
+            fresh.callbackUrl &&
+            fresh.apiClientId &&
+            updates.consecutiveFailures === errorThreshold &&
+            !(await lockRevokedClientIds(tx, [fresh.apiClientId])).has(fresh.apiClientId)
+          ) {
             newDeliveryIds.push(
               await enqueueWebhook(tx, {
                 targetId: fresh.id,
@@ -658,19 +673,31 @@ async function runWebsiteChecksLocked(
     const base = authPublicBaseUrl;
 
     // Alerts, `once` shutdowns, and their watch webhooks commit together: an alert is
-    // never saved without its outbox row, and vice versa.
+    // never saved without its outbox row, and vice versa. Changes of watches whose API
+    // client was revoked while this check ran are dropped (no event, webhook or notification);
+    // the client-row lock orders this against revocation.
     await db.transaction(async (tx) => {
-      await tx.insert(schema.alert).values(alertRows);
+      const revokedClients = await lockRevokedClientIds(
+        tx,
+        alertRows.map((row) => targetById.get(row.targetId)?.apiClientId),
+      );
+      const rows = alertRows.filter((row) => {
+        const clientId = targetById.get(row.targetId)?.apiClientId;
+        return !clientId || !revokedClients.has(clientId);
+      });
+      if (rows.length === 0) return;
+      await tx.insert(schema.alert).values(rows);
+      for (const row of rows) committed.add(row.id);
 
       const triggeredAt = new Date();
       for (const id of firedTargetIds) {
         const tgt = targetById.get(id);
-        if (tgt?.triggerMode !== "once") continue;
+        if (tgt?.triggerMode !== "once" || !rows.some((r) => r.targetId === id)) continue;
         await tx.update(schema.target).set({ enabled: false, triggeredAt }).where(eq(schema.target.id, id));
         targetById.set(id, { ...tgt, enabled: false, triggeredAt });
       }
 
-      for (const row of alertRows) {
+      for (const row of rows) {
         const tgt = targetById.get(row.targetId);
         if (row.suppressed || !tgt?.callbackUrl || !tgt.apiClientId) continue;
         newDeliveryIds.push(
@@ -694,7 +721,7 @@ async function runWebsiteChecksLocked(
 
     const alertsByDestinationId = new Map<string, NewAlertsAlert[]>();
     for (const a of alerts) {
-      if (a.suppressed) continue;
+      if (a.suppressed || !committed.has(a.id)) continue;
       const tgt = targetById.get(a.targetId);
       if (!tgt) continue;
       const dests = resolveDestinationsForTarget(tgt, userDestinations);
@@ -757,7 +784,7 @@ async function runWebsiteChecksLocked(
     }
   }
 
-  return { alerts: alerts.length, errors };
+  return { alerts: committed.size, errors };
 }
 
 export async function runAllChecks(): Promise<{

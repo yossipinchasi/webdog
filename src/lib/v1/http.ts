@@ -18,6 +18,15 @@ export function v1Error(status: number, code: string, message: string, details?:
   return NextResponse.json({ error: { code, message, ...(details !== undefined ? { details } : {}) } }, { status });
 }
 
+/** 409 for actions on a watch (or its deliveries) whose API client was revoked. History stays readable. */
+export function watchRevokedError() {
+  return v1Error(
+    409,
+    "watch_revoked",
+    "The API key that created this watch was revoked, so the watch no longer runs. It can still be read or deleted.",
+  );
+}
+
 export async function authenticateApiClient(
   req: Request,
 ): Promise<{ client: ApiClient; response: null } | { client: null; response: NextResponse }> {

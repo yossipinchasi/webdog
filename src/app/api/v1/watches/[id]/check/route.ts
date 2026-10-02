@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { runWebsiteChecks } from "@/lib/scraper";
-import { authenticateApiClient, v1Error } from "@/lib/v1/http";
+import { authenticateApiClient, v1Error, watchRevokedError } from "@/lib/v1/http";
 import { loadWatch, rowToWatchJson } from "@/lib/v1/watches";
 
 /** Check a watch now (ignores its schedule and paused state), like the dashboard's "Check now". */
@@ -12,6 +12,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const row = await loadWatch(ownerId, id);
   if (!row) return v1Error(404, "not_found", "Watch not found.");
+  if (row.clientRevokedAt) return watchRevokedError();
 
   const result = await runWebsiteChecks(row.website.id, { targetId: id });
   if (result.skipped) {
