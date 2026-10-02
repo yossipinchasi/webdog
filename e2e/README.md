@@ -49,6 +49,7 @@ It never touches `webdog_ai`. Working files go to `E2E_DIR` (a temporary directo
 | Y | `Retry-After` on 429/503 webhook responses |
 | H, H2 | Worker health heartbeats and `GET /api/health/worker` (also with the database unreachable) |
 | K | The outbox schedules by the database clock even when the app clock is skewed |
+| S, S2, S3 | Invite-only accounts (no sign-up without a valid invite; one account per invite use, also under concurrency; operator CLI), cross-account and member authorization, session cookie flags (also `Secure`/`__Secure-` on an https base URL), Better Auth's login rate limit, and refusal to run auth in production without `BETTER_AUTH_SECRET` |
 
 ## Repository secret scan
 

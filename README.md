@@ -142,12 +142,15 @@ cp .env.example .env
 npm run db:up
 npm run db:push
 
-# 5. Run — two terminals
+# 5. Create your account (accounts are invite-only; this creates the first owner)
+npm run users -- create --email you@example.com --name "You"   # prints a generated password once
+
+# 6. Run — two terminals
 npm run dev      # Next.js app on http://localhost:3000
 npm run worker   # scrape/diff worker
 ```
 
-Sign up at `http://localhost:3000`, add a website, and pick what to watch. Done.
+Sign in at `http://localhost:3000`, add a website, and pick what to watch. Done. To add teammates, create an invite link under **Settings → Team**; there is no public sign-up.
 
 > [!TIP]
 > No `CONTEXT_DEV_API_KEY` in the environment? No problem — each account is asked for its own key during onboarding and can manage it later in **Settings**.
@@ -178,7 +181,7 @@ All configuration is environment variables (see `.env.example`). Everything exce
 
 | Variable | Required | Description |
 |---|---|---|
-| `BETTER_AUTH_SECRET` | Prod only | Session/cookie crypto secret. Generate with `openssl rand -base64 32` |
+| `BETTER_AUTH_SECRET` | Prod only | Session/cookie crypto secret, required whenever `NODE_ENV=production` (any host). Generate with `openssl rand -base64 32` |
 | `BETTER_AUTH_URL` | No | Public origin for auth callbacks. Local default `http://localhost:3000`; on Railway it is derived from `RAILWAY_PUBLIC_DOMAIN` automatically |
 | `NEXT_PUBLIC_APP_URL` | No | Public origin for the client bundle when the platform domain env is missing or must be overridden |
 | `BETTER_AUTH_ALLOWED_HOSTS` | No | Comma-separated host patterns (wildcards OK, e.g. `*.up.railway.app`) when serving multiple hostnames |
@@ -237,7 +240,7 @@ A machine API under `/api/v1` lets another service (for example an AI agent plat
 
 ### Authentication
 
-Create a key for an existing account (sign up in the dashboard first). The key acts as that account and is shown once; only its hash is stored:
+Create a key for an existing account (see [Accounts and access](#accounts-and-access)). The key acts as that account and is shown once; only its hash is stored:
 
 ```bash
 npm run api-keys -- create --email you@example.com --name "My platform"
@@ -390,11 +393,23 @@ Errors always look like `{"error": {"code": "…", "message": "…"}}` (`401 una
 - **Losing the key loses the stored credentials** (users re-enter their keys and destinations; rotate API clients' webhook secrets). Back it up somewhere other than the database.
 - Before encryption, credentials were stored in plaintext. Old row versions can linger in Postgres dead tuples, WAL, and backups after the backfill; rotate any credential whose earlier exposure matters.
 
+### Accounts and access
+
+- **Invite-only.** There is no public sign-up. A new user can only be created with an account invite (the sign-up page opened from an invite link) or by an operator with `npm run users -- create` (to create the first owner). This is enforced where Better Auth creates users, so no endpoint can bypass it. Each sign-up uses one of the invite's uses atomically (a 5-use link creates at most 5 accounts, even with concurrent sign-ups), and the new user joins the inviting account. Existing users sign in and redeem invites as before.
+- **Accounts and members.** Every user owns an account. An owner can invite members; a member can use everything in that account (websites, monitors, alerts, destinations, provider settings, "Run now", share links) but cannot create or revoke invites or remove members. There are no finer roles. No one can read or change another account's data; every dashboard API and page scopes by account, and the selected-account cookie is re-checked against membership on each request.
+- **Sessions.** Better Auth sessions last 30 days (refreshed daily). The session cookie is `HttpOnly`, `SameSite=Lax`, and on an `https` base URL (production) `Secure` with the `__Secure-` prefix. `BETTER_AUTH_SECRET` is required whenever `NODE_ENV=production`; the app and worker refuse to start auth without it. Better Auth's origin and CSRF checks are on; `BETTER_AUTH_DISABLE_ORIGIN_CHECK` / `BETTER_AUTH_DISABLE_CSRF_CHECK` exist for unusual proxy setups and should stay unset.
+- **Login rate limits.** In production Better Auth limits sign-in, sign-up, and password changes to 3 attempts per 10 seconds per client IP (other auth requests: 100 per 10 seconds), kept in the web process's memory. The client IP comes from `X-Forwarded-For` when it holds a single address; otherwise all clients share one bucket per path (still limited, but one client can then slow sign-in for everyone). See the backlog for deployment notes.
+- **Dependencies.** CI fails on any high or critical advisory in production dependencies (`npm audit --omit=dev --audit-level=high`).
+
 **Security backlog** (known, not yet done):
 
 - **Hash `website.publicShareToken`.** Public share links are bearer tokens stored in plaintext. Store a hash instead (a deterministic hash keeps the exact-match lookup working); the dashboard would then show a link only when it is created.
 - **Review Better Auth's storage of `session.token` and `verification.value`.** Both are plaintext in the database by the library's design; confirm what a database read alone allows (session cookies are signed with `BETTER_AUTH_SECRET`) and whether hashing them is supported.
 - **Remove transitional plaintext reads.** `decryptSecret` still returns values without the `enc:` prefix as-is, so legacy rows keep working during the backfill. Drop this once every database reports zero plaintext in `npm run secrets -- verify`.
+- **Pin the client IP for login rate limits on the real deployment.** Check how the hosting proxy fills `X-Forwarded-For` (one curl after the first deploy). If it appends the real client address to a client-supplied value, set Better Auth's `advanced.ipAddress.trustedProxies` (or `ipAddressHeaders`) so the limit keys on the real address; if it passes a client-supplied value through unchanged, the per-IP limit can be bypassed by rotating that header.
+- **Shared login rate-limit storage.** Better Auth keeps its counters in process memory: fine for one web replica, but they reset on restart and aren't shared across replicas. Use its database storage before scaling the web service out.
+- **Account roles.** Members currently have full operator rights in the account they joined; read-only or limited roles are a future feature.
+- **Filter non-http(s) links from monitored sitemaps.** React already refuses `javascript:` URLs; filtering at ingest would be defense in depth.
 - **Automate key rotation.** Add a command that re-encrypts every value under the current `DATA_ENCRYPTION_KEY`, so old keys can be removed from `DATA_ENCRYPTION_KEY_PREVIOUS`.
 
 ---
@@ -488,6 +503,7 @@ Set `BETTER_AUTH_URL` (or `NEXT_PUBLIC_APP_URL`) to your public origin and `BETT
 | `npm run worker` | Run the scrape/diff worker on the cron schedule |
 | `npm run worker:once` | Single worker pass, then exit (handy for debugging) |
 | `npm run api-keys -- <create\|list\|revoke\|webhook-secret>` | Manage Watcher API keys and webhook secrets |
+| `npm run users -- create --email <email> --name "<name>" [--password-stdin]` | Create a user without an invite (the first account owner); accounts are otherwise invite-only |
 | `npm run legacy-webhooks [-- --apply]` | List (default) or remove the unused `API webhook (…)` destinations left by the pre-signed-webhooks API |
 | `npm run secrets -- <encrypt [--dry-run]\|verify>` | Encrypt remaining plaintext credentials / check that every stored credential decrypts |
 | `npm run build` / `npm run start` | Production build / serve |

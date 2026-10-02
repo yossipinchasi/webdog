@@ -29,8 +29,16 @@ export default async function SignUpPage({
         </Link>
         <div className="mx-auto w-full max-w-xs">
           <h1 className="text-3xl font-semibold tracking-tight text-neutral-900">Create your account</h1>
-          <p className="mt-2 text-sm text-neutral-600">{signUpInviteSubtitle(inviteToken, invitePreview)}</p>
-          <SignUpForm className="mt-8" inviteToken={inviteToken} />
+          {inviteToken ? (
+            <>
+              <p className="mt-2 text-sm text-neutral-600">{signUpInviteSubtitle(inviteToken, invitePreview)}</p>
+              <SignUpForm className="mt-8" inviteToken={inviteToken} />
+            </>
+          ) : (
+            <p className="mt-2 text-sm text-neutral-600">
+              {APP_NAME} is invite-only. Ask an account owner for an invite link, then open it to create your account.
+            </p>
+          )}
           <p className="mt-6 text-sm text-neutral-600">
             Already have an account?{" "}
             <Link

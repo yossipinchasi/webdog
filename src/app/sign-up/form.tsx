@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
+import { INVITE_HEADER } from "@/lib/invite-header";
 import { formatCredentialAuthUiError } from "@/lib/auth-ui-error";
 import { caughtUnknownMessage } from "@/lib/caught-unknown-message";
 
@@ -26,7 +27,12 @@ export function SignUpForm({
     setLoading(true);
     void (async () => {
       try {
-        const res = await authClient.signUp.email({ name, email, password });
+        // Accounts are invite-only: the server only creates a user for a valid invite.
+        const invite = inviteToken?.trim();
+        const res = await authClient.signUp.email(
+          { name, email, password },
+          invite ? { headers: { [INVITE_HEADER]: invite } } : undefined,
+        );
         if (res.error) {
           setError(
             formatCredentialAuthUiError(res.error.message ?? "Sign up failed", res.error),

@@ -37,19 +37,19 @@ export default async function SignInPage({
             {signInInviteSubtitle(inviteToken, invitePreview)}
           </p>
           <SignInForm className="mt-8" inviteToken={inviteToken} />
-          <p className="mt-6 text-sm text-neutral-600">
-            New here?{" "}
-            <Link
-              href={
-                inviteToken
-                  ? `/sign-up?invite=${encodeURIComponent(inviteToken)}`
-                  : "/sign-up"
-              }
-              className="font-semibold text-brand-600 hover:text-brand-700"
-            >
-              Create an account
-            </Link>
-          </p>
+          {inviteToken ? (
+            <p className="mt-6 text-sm text-neutral-600">
+              New here?{" "}
+              <Link
+                href={`/sign-up?invite=${encodeURIComponent(inviteToken)}`}
+                className="font-semibold text-brand-600 hover:text-brand-700"
+              >
+                Create an account
+              </Link>
+            </p>
+          ) : (
+            <p className="mt-6 text-sm text-neutral-600">New accounts are by invitation only.</p>
+          )}
         </div>
         <p className="text-xs text-neutral-500">
           &copy; {new Date().getFullYear()} Context.dev. Distributed under the

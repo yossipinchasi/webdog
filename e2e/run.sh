@@ -97,6 +97,43 @@ with_app Y
 echo "--- H: worker health ---"
 with_app H
 
+echo "--- S: invite-only accounts, authorization, auth rate limits ---"
+with_app S
+
+echo "--- S2: production session cookie on an https base URL (separate instance) ---"
+EMAIL=$(node -e 'console.log(require(process.argv[1]).email)' "$S/secrets.json")
+PASS=$(node -e 'console.log(require(process.argv[1]).password)' "$S/secrets.json")
+if BETTER_AUTH_URL=https://localhost:3103 serve 3103 "$S/app3.log" 200; then
+  APP4=$SERVED_PID
+  SC=$(curl -s -o /dev/null -D - -X POST http://localhost:3103/api/auth/sign-in/email -H 'content-type: application/json' -H 'origin: https://localhost:3103' -H 'x-forwarded-for: 192.0.2.10' --data "{\"email\":\"$EMAIL\",\"password\":\"$PASS\"}" | tr -d '\r' | grep -i '^set-cookie:.*session_token=')
+  if printf '%s' "$SC" | grep -q '__Secure-better-auth.session_token=' && printf '%s' "$SC" | grep -qi '; Secure' && printf '%s' "$SC" | grep -qi 'HttpOnly' && printf '%s' "$SC" | grep -qi 'SameSite=Lax'; then
+    echo "PASS [S2] https base URL: session cookie is __Secure-, Secure, HttpOnly, SameSite=Lax"
+  else echo "FAIL [S2] https cookie flags: $(printf '%s' "$SC" | sed 's/=[^;]*/=…/')"; rc=1; fi
+  unserve "$APP4" 3103 || fail "app on 3103 did not stop"
+else
+  fail "S2 instance did not start"
+fi
+
+echo "--- S3: production without BETTER_AUTH_SECRET refuses to authenticate (separate instance + worker) ---"
+SAVED_SECRET="$BETTER_AUTH_SECRET"; unset BETTER_AUTH_SECRET
+if serve 3104 "$S/app3.log" any; then
+  APP5=$SERVED_PID
+  GS=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3104/api/auth/get-session)
+  SI=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:3104/api/auth/sign-in/email -H 'content-type: application/json' -H 'origin: http://localhost:3100' --data "{\"email\":\"$EMAIL\",\"password\":\"$PASS\"}")
+  if [ "$GS" -ge 500 ] && [ "$SI" -ge 500 ] && grep -q "BETTER_AUTH_SECRET must be set in production" "$S/app3.log"; then
+    echo "PASS [S3] no BETTER_AUTH_SECRET in production: auth refuses (get-session $GS, sign-in $SI), no fallback secret"
+  else echo "FAIL [S3] missing secret: get-session=$GS sign-in=$SI"; rc=1; fi
+  unserve "$APP5" 3104 || fail "app on 3104 did not stop"
+else
+  fail "S3 instance did not start"
+fi
+if WOUT=$(NODE_OPTIONS= npm run -s worker:once 2>&1); then
+  echo "FAIL [S3] worker started without BETTER_AUTH_SECRET in production"; rc=1
+elif printf '%s' "$WOUT" | grep -q "BETTER_AUTH_SECRET must be set in production"; then
+  echo "PASS [S3] the worker refuses to start without BETTER_AUTH_SECRET in production"
+else echo "FAIL [S3] worker failed for another reason: $(printf '%s' "$WOUT" | tail -3)"; rc=1; fi
+export BETTER_AUTH_SECRET="$SAVED_SECRET"
+
 echo "--- H2: worker health when the database is unreachable (separate instance) ---"
 if DATABASE_URL="$PG_BASE/does_not_exist_e2e" serve 3102 "$S/app3.log" any; then
   APP3=$SERVED_PID

@@ -1058,6 +1058,154 @@ if (PHASE === "H") {
   save();
 }
 
+/* ================= PHASE S: invite-only accounts, authorization, auth limits (final security) ================= */
+if (PHASE === "S") {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  let ipSeq = 10;
+  const nextIp = () => `198.51.100.${ipSeq++}`; // TEST-NET-2: one per request so Better Auth's per-IP limiter stays out of the way
+  async function authPost(path: string, body: unknown, headers: Record<string, string> = {}) {
+    const r = await fetch(`${APP}/api/auth${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: APP, "x-forwarded-for": nextIp(), ...headers },
+      body: JSON.stringify(body),
+    });
+    const text = await r.text();
+    let json: any = null;
+    try { json = JSON.parse(text); } catch { /* */ }
+    return { status: r.status, body: json, cookie: r.headers.getSetCookie().map((c) => c.split(";")[0]).join("; "), setCookie: r.headers.getSetCookie() };
+  }
+  async function as(cookieJar: string, path: string, init: { method?: string; json?: unknown; extraCookie?: string } = {}) {
+    const headers: Record<string, string> = { origin: APP, cookie: init.extraCookie ? `${cookieJar}; ${init.extraCookie}` : cookieJar };
+    if (init.json !== undefined) headers["content-type"] = "application/json";
+    const r = await fetch(APP + path, { method: init.method ?? "GET", headers, body: init.json === undefined ? undefined : JSON.stringify(init.json), redirect: "manual" });
+    const text = await r.text();
+    let body: any = null;
+    try { body = JSON.parse(text); } catch { /* */ }
+    return { status: r.status, body, text };
+  }
+  const userCount = async () => Number((await db.query(`SELECT count(*) FROM "user"`)).rows[0].count);
+  const inviteRow = async (token: string) => (await db.query(`SELECT "useCount", "maxUses", "redeemedByUserId" FROM "accountInvite" WHERE "tokenHash" = encode(sha256($1::bytea), 'hex')`, [token])).rows[0];
+  const signUp = (email: string, invite?: string, extra: Record<string, unknown> = {}) =>
+    authPost("/sign-up/email", { name: "Test Person", email, password: "test-only-password-1", ...extra }, invite ? { "x-webdog-invite": invite } : {});
+
+  // Owner A (seeded) creates invites through the API.
+  const owner = await authPost("/sign-in/email", { email: secrets.email, password: secrets.password });
+  check("S existing account signs in normally", owner.status === 200 && owner.cookie.includes("session_token"), owner.status);
+  const newInvite = async () => {
+    const r = await as(owner.cookie, "/api/account/invites", { method: "POST" });
+    return decodeURIComponent(String(r.body?.inviteUrl ?? "").split("/invite/")[1] ?? "");
+  };
+
+  // --- no public sign-up
+  const before = await userCount();
+  const noInvite = await signUp(`nobody-${rnd()}@example.com`);
+  check("S sign-up without an invite → 403 invite-only, no user created", noInvite.status === 403 && /invite-only/.test(noInvite.body?.message ?? "") && (await userCount()) === before, noInvite);
+  const bogus = await signUp(`bogus-${rnd()}@example.com`, "not-a-real-invite-token-0000000000");
+  check("S sign-up with a made-up invite → 403, no user created", bogus.status === 403 && (await userCount()) === before, bogus.body);
+  const bodyOnly = await signUp(`body-${rnd()}@example.com`, undefined, { invite: await newInvite(), inviteToken: "x" });
+  check("S an invite in the request body (not the header) doesn't count → refused, no user created", bodyOnly.status >= 400 && bodyOnly.status < 500 && (await userCount()) === before, bodyOnly);
+  const expiredTok = await newInvite();
+  await db.query(`UPDATE "accountInvite" SET "expiresAt" = now() - interval '1 minute' WHERE "tokenHash" = encode(sha256($1::bytea), 'hex')`, [expiredTok]);
+  const expired = await signUp(`expired-${rnd()}@example.com`, expiredTok);
+  check("S sign-up with an expired invite → 403", expired.status === 403 && (await userCount()) === before, expired.body);
+  const usedTok = await newInvite();
+  await db.query(`UPDATE "accountInvite" SET "useCount" = "maxUses" WHERE "tokenHash" = encode(sha256($1::bytea), 'hex')`, [usedTok]);
+  const used = await signUp(`used-${rnd()}@example.com`, usedTok);
+  check("S sign-up with a used-up invite → 403", used.status === 403 && (await userCount()) === before, used.body);
+  const social = await authPost("/sign-in/social", { provider: "github", callbackURL: "/dashboard" });
+  check("S no social/OAuth sign-in exists to create accounts", social.status >= 400 && (await userCount()) === before, social.status);
+
+  // --- invited sign-up: account created, joins the inviting account, consumes one use
+  const memberTok = await newInvite();
+  const mEmail = `member-${rnd()}@example.com`;
+  const m = await signUp(mEmail, memberTok);
+  const mId = m.body?.user?.id;
+  const mem = (await db.query(`SELECT count(*) FROM "accountMembership" WHERE "ownerUserId" = $1 AND "memberUserId" = $2`, [secrets.ids.user, mId])).rows[0].count;
+  const inv1 = await inviteRow(memberTok);
+  check("S sign-up with a valid invite → account created, member of the inviting account, one use consumed",
+    m.status === 200 && mId && mem === "1" && inv1.useCount === 1 && inv1.redeemedByUserId === mId, { status: m.status, mem, inv1 });
+  const redeem = await as(m.cookie, "/api/account/invites/redeem", { method: "POST", json: { token: memberTok } });
+  check("S the invite page's redeem step afterwards consumes nothing more", redeem.status === 200 && (await inviteRow(memberTok)).useCount === 1, { redeem: redeem.body, inv: await inviteRow(memberTok) });
+  const intro = (await db.query(`SELECT "contextIntroDismissedAt" IS NOT NULL AS skipped FROM "user" WHERE id = $1`, [mId])).rows[0];
+  check("S invited members skip the owner onboarding, as before", intro.skipped === true);
+
+  // --- concurrent sign-ups on one remaining use: exactly one account
+  const raceTok = await newInvite();
+  await db.query(`UPDATE "accountInvite" SET "maxUses" = 1 WHERE "tokenHash" = encode(sha256($1::bytea), 'hex')`, [raceTok]);
+  const beforeRace = await userCount();
+  const race = await Promise.all(Array.from({ length: 8 }, () => signUp(`race-${rnd()}@example.com`, raceTok)));
+  const ok = race.filter((r) => r.status === 200).length;
+  check("S 8 concurrent sign-ups on an invite with 1 use left → exactly 1 account, 7× 403",
+    ok === 1 && race.filter((r) => r.status === 403).length === 7 && (await userCount()) === beforeRace + 1 && (await inviteRow(raceTok)).useCount === 1, race.map((r) => r.status));
+
+  // --- operator bootstrap CLI (no invite) and the outsider it creates
+  const xEmail = `outsider-${rnd()}@example.com`;
+  const cli = execFileSync("sh", ["-c", `printf '%s' 'test-only-password-2' | npm run -s users -- create --email ${xEmail} --name Outsider --password-stdin`], { env: process.env, encoding: "utf8" });
+  const x = await authPost("/sign-in/email", { email: xEmail, password: "test-only-password-2" });
+  check("S operator CLI creates a user without an invite; it can sign in", /Created user/.test(cli) && x.status === 200 && !/test-only-password-2/.test(cli), { cli, status: x.status });
+
+  // --- cross-account access: the outsider sees none of A's data
+  const site = secrets.ids.website;
+  const aTarget = secrets.ids.target;
+  const aAlert = (await db.query(`SELECT id FROM alert WHERE "websiteId" = $1 LIMIT 1`, [site])).rows[0]?.id ?? "alr_none";
+  const forged = `wd_account=${secrets.ids.user}`;
+  const outsiderCalls = await Promise.all([
+    as(x.cookie, `/api/websites/${site}`),
+    as(x.cookie, `/api/websites/${site}`, { method: "PATCH", json: { notificationDestinationIds: null } }),
+    as(x.cookie, `/api/websites/${site}`, { method: "DELETE" }),
+    as(x.cookie, `/api/websites/${site}/share`, { method: "POST" }),
+    as(x.cookie, `/api/targets/${aTarget}`, { method: "PATCH", json: { aiTriageEnabled: true } }),
+    as(x.cookie, `/api/targets/${aTarget}`, { method: "DELETE" }),
+    as(x.cookie, `/api/alerts/${aAlert}`, { method: "PATCH", json: { read: true } }),
+    as(x.cookie, `/api/cron/run`, { method: "POST", json: { websiteId: site } }),
+    as(x.cookie, `/api/user/notification-destinations/${secrets.ids.hook}`, { method: "PATCH", json: { name: "pwned" } }),
+    as(x.cookie, `/api/user/notification-settings/test`, { method: "POST", json: { destinationId: secrets.ids.hook } }),
+    as(x.cookie, `/api/websites/${site}`, { extraCookie: forged }),
+    as(x.cookie, `/api/targets/${aTarget}`, { method: "PATCH", json: { aiTriageEnabled: true }, extraCookie: forged }),
+  ]);
+  check("S outsider: every read/write/trigger on another account's site, monitor, alert, destination → 404/400 (incl. forged account cookie)",
+    outsiderCalls.every((r) => r.status === 404 || r.status === 400), outsiderCalls.map((r) => r.status));
+  const lists = await Promise.all([as(x.cookie, "/api/websites"), as(x.cookie, "/api/alerts"), as(x.cookie, "/api/user/notification-destinations"), as(x.cookie, "/api/user/notification-settings")]);
+  const leaked = [site, aTarget, secrets.ids.hook, secrets.ids.slack, "Legacy Shop"].filter((n) => lists.some((l) => l.text.includes(n)));
+  check("S outsider: lists of websites, alerts, destinations, settings contain nothing of the other account", leaked.length === 0, leaked);
+  const page = await as(x.cookie, `/dashboard/websites/${site}`);
+  check("S outsider: another account's dashboard page is not served", page.status === 404 || !page.text.includes("Legacy Shop"), page.status);
+  const sw = await as(x.cookie, "/api/account/active", { method: "POST", json: { ownerUserId: secrets.ids.user } });
+  check("S outsider cannot switch into another account", sw.status === 400, sw.body);
+  check("S outsider: no team management of another account", (await as(x.cookie, `/api/account/members/${mId}`, { method: "DELETE" })).status === 404);
+
+  // --- member: full use of the account it joined, no team administration
+  const mSites = await as(m.cookie, "/api/websites");
+  const mSite = await as(m.cookie, `/api/websites/${site}`);
+  check("S member: reads the account it joined", mSites.text.includes(site) && mSite.status === 200);
+  const mInv = await as(m.cookie, "/api/account/invites");
+  const mInvPost = await as(m.cookie, "/api/account/invites", { method: "POST" });
+  const mKick = await as(m.cookie, `/api/account/members/${mId}`, { method: "DELETE" });
+  check("S member: cannot list or create invites, or remove members (owner-only)", mInv.status === 403 && mInvPost.status === 403 && mKick.status === 404, [mInv.status, mInvPost.status, mKick.status]);
+  check("S member: no access to the outsider's account", (await as(m.cookie, "/api/account/active", { method: "POST", json: { ownerUserId: x.body?.user?.id } })).status === 400);
+
+  // --- session cookie flags (http here; the https/Secure variant runs in run.sh)
+  const sc = owner.setCookie.find((c) => /session_token=/.test(c)) ?? "";
+  check("S session cookie: HttpOnly, SameSite=Lax, Path=/, expiring", /HttpOnly/i.test(sc) && /SameSite=Lax/i.test(sc) && /Path=\//.test(sc) && /(Max-Age|Expires)=/i.test(sc), sc.replace(/=[^;]+/, "=…"));
+
+  // --- Better Auth brute-force limit: 3 sign-in attempts per 10 s per client IP
+  await sleep(11_000);
+  const attempt = (ip: string) => fetch(`${APP}/api/auth/sign-in/email`, {
+    method: "POST", headers: { "content-type": "application/json", origin: APP, "x-forwarded-for": ip },
+    body: JSON.stringify({ email: secrets.email, password: "wrong-password-0" }),
+  });
+  const sameIp = [];
+  for (let i = 0; i < 4; i++) sameIp.push(await attempt("203.0.113.77"));
+  const other = await attempt("203.0.113.78");
+  check("S brute force: 4th wrong-password attempt within 10 s from one IP → 429; another IP is independent",
+    sameIp.slice(0, 3).every((r) => r.status === 401) && sameIp[3]!.status === 429 && other.status === 401, [...sameIp.map((r) => r.status), other.status]);
+  const noIp = [];
+  for (let i = 0; i < 4; i++) noIp.push((await fetch(`${APP}/api/auth/sign-in/email`, { method: "POST", headers: { "content-type": "application/json", origin: APP }, body: JSON.stringify({ email: secrets.email, password: "wrong-password-0" }) })).status);
+  check("S without a usable client IP, attempts share one bucket (still limited: 4th → 429)", noIp.slice(0, 3).every((s) => s === 401) && noIp[3] === 429, noIp);
+  await sleep(11_000); // leave the limiter clear for later phases
+  save();
+}
+
 /* ---------------- summary ---------------- */
 const all = existsSync(`${S}/results.json`) ? JSON.parse(readFileSync(`${S}/results.json`, "utf8")) : [];
 writeFileSync(`${S}/results.json`, JSON.stringify([...all.filter((r: any) => r.phase !== PHASE), ...results], null, 2));
