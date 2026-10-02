@@ -71,6 +71,13 @@
       "when": 1790901464318,
       "tag": "0009_api_rate_limits",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1790902522071,
+      "tag": "0010_webhook_delivery_retention",
+      "breakpoints": true
     }
   ]
 }

@@ -147,7 +147,7 @@ async function recordOutcome(row: Claimed, result: SendResult, secretMissing: bo
   if (result.ok) {
     await db
       .update(schema.webhookDelivery)
-      .set({ status: "delivered", deliveredAt: new Date(nowMs), lastStatusCode: result.statusCode, lastError: null })
+      .set({ status: "delivered", deliveredAt: new Date(nowMs), completedAt: sql`now()`, lastStatusCode: result.statusCode, lastError: null })
       .where(and(eq(schema.webhookDelivery.id, row.id), inArray(schema.webhookDelivery.status, ["pending", "canceled"])));
     return "delivered";
   }
@@ -157,6 +157,7 @@ async function recordOutcome(row: Claimed, result: SendResult, secretMissing: bo
     .update(schema.webhookDelivery)
     .set({
       status: delay === null ? "failed" : "pending",
+      completedAt: delay === null ? sql`now()` : null,
       nextAttemptAt: new Date(nowMs + (delay ?? 0)),
       lastStatusCode: result.statusCode,
       lastError: result.error,
@@ -169,7 +170,7 @@ async function recordOutcome(row: Claimed, result: SendResult, secretMissing: bo
 async function cancelRevoked(row: Claimed): Promise<Outcome> {
   await db
     .update(schema.webhookDelivery)
-    .set({ status: "canceled", lastError: REVOKED_DELIVERY_ERROR })
+    .set({ status: "canceled", completedAt: sql`now()`, lastError: REVOKED_DELIVERY_ERROR })
     .where(and(eq(schema.webhookDelivery.id, row.id), eq(schema.webhookDelivery.status, "pending")));
   return "canceled";
 }
@@ -232,7 +233,7 @@ export async function deliverDueWebhooks(options: { ids?: string[]; batchSize?: 
 export async function requeueDelivery(id: string): Promise<boolean> {
   const requeued = await db
     .update(schema.webhookDelivery)
-    .set({ status: "pending", attempts: 0, nextAttemptAt: new Date(), deliveredAt: null })
+    .set({ status: "pending", attempts: 0, nextAttemptAt: new Date(), deliveredAt: null, completedAt: null })
     .where(and(eq(schema.webhookDelivery.id, id), eq(schema.webhookDelivery.status, "failed"), deliveryClientNotRevoked))
     .returning({ id: schema.webhookDelivery.id });
   return requeued.length === 1;

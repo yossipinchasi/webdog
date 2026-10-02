@@ -93,7 +93,7 @@ export async function revokeApiClient(apiClientId: string, now = new Date()): Pr
     }
     const canceled = await tx
       .update(schema.webhookDelivery)
-      .set({ status: "canceled", lastError: REVOKED_DELIVERY_ERROR })
+      .set({ status: "canceled", completedAt: sql`now()`, lastError: REVOKED_DELIVERY_ERROR })
       .where(and(eq(schema.webhookDelivery.apiClientId, apiClientId), eq(schema.webhookDelivery.status, "pending")))
       .returning({ id: schema.webhookDelivery.id });
     return { found: true, revokedAt, alreadyRevoked: Boolean(client.revokedAt), canceledDeliveries: canceled.length } as const;
