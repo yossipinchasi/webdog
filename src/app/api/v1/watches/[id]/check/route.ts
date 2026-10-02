@@ -5,7 +5,7 @@ import { loadWatch, rowToWatchJson } from "@/lib/v1/watches";
 
 /** Check a watch now (ignores its schedule and paused state), like the dashboard's "Check now". */
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const auth = await authenticateApiClient(req);
+  const auth = await authenticateApiClient(req, "check");
   if (!auth.client) return auth.response;
   const ownerId = auth.client.ownerUserId;
   const { id } = await params;

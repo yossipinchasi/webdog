@@ -15,7 +15,7 @@ type Params = { params: Promise<{ id: string }> };
 const notFound = () => v1Error(404, "not_found", "Watch not found.");
 
 export async function GET(req: Request, { params }: Params) {
-  const auth = await authenticateApiClient(req);
+  const auth = await authenticateApiClient(req, "read");
   if (!auth.client) return auth.response;
   const row = await loadWatch(auth.client.ownerUserId, (await params).id);
   if (!row) return notFound();
@@ -23,7 +23,7 @@ export async function GET(req: Request, { params }: Params) {
 }
 
 export async function PATCH(req: Request, { params }: Params) {
-  const auth = await authenticateApiClient(req);
+  const auth = await authenticateApiClient(req, "write");
   if (!auth.client) return auth.response;
   const ownerId = auth.client.ownerUserId;
   const { id } = await params;
@@ -91,7 +91,7 @@ export async function PATCH(req: Request, { params }: Params) {
 }
 
 export async function DELETE(req: Request, { params }: Params) {
-  const auth = await authenticateApiClient(req);
+  const auth = await authenticateApiClient(req, "write");
   if (!auth.client) return auth.response;
   const { id } = await params;
   const row = await loadWatch(auth.client.ownerUserId, id);

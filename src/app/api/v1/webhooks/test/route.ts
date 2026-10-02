@@ -11,7 +11,7 @@ import { postSignedWebhook } from "@/lib/webhook-outbox";
  * or retried; the result is returned directly.
  */
 export async function POST(req: Request) {
-  const auth = await authenticateApiClient(req);
+  const auth = await authenticateApiClient(req, "webhook");
   if (!auth.client) return auth.response;
 
   const parsed = await parseV1Json(req, testWebhookSchema);

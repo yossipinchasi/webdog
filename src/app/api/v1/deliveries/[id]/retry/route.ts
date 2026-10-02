@@ -11,7 +11,7 @@ import { deliverDueWebhooks, requeueDelivery } from "@/lib/webhook-outbox";
  * window). Attempts once immediately; on failure it is back on the normal backoff.
  */
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const auth = await authenticateApiClient(req);
+  const auth = await authenticateApiClient(req, "webhook");
   if (!auth.client) return auth.response;
   const { id } = await params;
 

@@ -13,6 +13,7 @@ import cron from "node-cron";
 import { runAllChecks } from "../src/lib/scraper";
 import { pruneSnapshots, snapshotRetentionDays } from "../src/lib/snapshot-retention";
 import { deliverDueWebhooks } from "../src/lib/webhook-outbox";
+import { pruneRateLimits } from "../src/lib/rate-limit";
 import { currentKeyId } from "../src/lib/secret-box";
 
 /** Pruning scans the snapshot table, so run it at most hourly rather than every tick. */
@@ -57,6 +58,16 @@ async function pruneIfDue() {
   }
 }
 
+/** Expired API rate-limit windows (the web app also prunes a batch now and then). */
+async function pruneRateLimitWindows() {
+  try {
+    const deleted = await pruneRateLimits();
+    if (deleted > 0) console.log(`[worker] pruned ${deleted} expired rate-limit window(s)`);
+  } catch (err) {
+    console.error("[worker] rate-limit pruning failed:", err);
+  }
+}
+
 async function runOnce() {
   // A tick that outlasts the cron interval must not overlap the next one; the
   // per-website check lock also guards against other processes.
@@ -74,6 +85,7 @@ async function runOnce() {
         (result.skipped > 0 ? `, ${result.skipped} site(s) skipped (check already running elsewhere)` : ""),
     );
     await pruneIfDue();
+    await pruneRateLimitWindows();
   } catch (err) {
     console.error("[worker] run failed:", err);
   } finally {

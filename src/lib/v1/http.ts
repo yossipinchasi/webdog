@@ -10,6 +10,7 @@ import { db } from "../db";
 import * as schema from "../db/schema";
 import type { ApiClient } from "../db/schema";
 import { hashApiKey, parseBearerApiKey } from "../api-keys";
+import { consumeRateLimit, describeRule, type RateLimitClass, type RateLimitDecision } from "../rate-limit";
 
 /** Avoid a write per request: only refresh `lastUsedAt` when it is older than this. */
 const LAST_USED_REFRESH_MS = 60_000;
@@ -27,8 +28,14 @@ export function watchRevokedError() {
   );
 }
 
+/**
+ * Authenticate the API key, then count the request against its rate-limit class.
+ * Invalid and revoked keys get 401 before any rate limiting, so they never create
+ * rate-limit state; an exhausted limit returns 429 (see `rateLimitedResponse`).
+ */
 export async function authenticateApiClient(
   req: Request,
+  rateLimitClass: RateLimitClass,
 ): Promise<{ client: ApiClient; response: null } | { client: null; response: NextResponse }> {
   const key = parseBearerApiKey(req.headers.get("authorization"));
   if (!key) {
@@ -49,7 +56,29 @@ export async function authenticateApiClient(
   if (!client.lastUsedAt || nowMs - Number(client.lastUsedAt) > LAST_USED_REFRESH_MS) {
     await db.update(schema.apiClient).set({ lastUsedAt: new Date(nowMs) }).where(eq(schema.apiClient.id, client.id));
   }
+  const limit = await consumeRateLimit(client.id, rateLimitClass);
+  if (!limit.allowed) return { client: null, response: rateLimitedResponse(rateLimitClass, limit) };
   return { client, response: null };
+}
+
+/**
+ * 429 with `Retry-After` (seconds) and the `RateLimit-*` fields for the exhausted rule;
+ * `error.details` repeats them for clients that only read the body.
+ */
+export function rateLimitedResponse(cls: RateLimitClass, d: Extract<RateLimitDecision, { allowed: false }>) {
+  const res = v1Error(429, "rate_limited", `Rate limit exceeded for ${cls} requests (${describeRule(d.rule)}). Retry after ${d.retryAfterSeconds}s.`, {
+    class: cls,
+    limit: d.rule.limit,
+    windowSeconds: d.rule.windowSeconds,
+    retryAfterSeconds: d.retryAfterSeconds,
+    resetAt: d.resetAt.toISOString(),
+  });
+  res.headers.set("Retry-After", String(d.retryAfterSeconds));
+  res.headers.set("RateLimit-Limit", String(d.rule.limit));
+  res.headers.set("RateLimit-Remaining", "0");
+  res.headers.set("RateLimit-Reset", String(d.retryAfterSeconds));
+  res.headers.set("RateLimit-Policy", `${d.rule.limit};w=${d.rule.windowSeconds}`);
+  return res;
 }
 
 export async function parseV1Json<T extends z.ZodTypeAny>(
