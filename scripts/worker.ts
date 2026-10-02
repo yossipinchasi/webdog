@@ -6,7 +6,7 @@
 // Env: SCRAPE_CRON (default every 15 min), CONTEXT_DEV_API_KEY, RESEND_API_KEY,
 // RESEND_SEND_FROM_EMAIL, POSTFIX_TO_ALERTS, MAX_ALERTS, SNAPSHOT_RETENTION_DAYS,
 // WEBHOOK_POLL_SECONDS (default 10), WATCH_ERROR_THRESHOLD (default 3), DATABASE_URL,
-// DATA_ENCRYPTION_KEY (required in production).
+// DATA_ENCRYPTION_KEY (required in production), WEBHOOK_DELIVERY_RETENTION_DAYS (default 30).
 
 import "dotenv/config";
 import cron from "node-cron";
@@ -14,6 +14,7 @@ import { runAllChecks } from "../src/lib/scraper";
 import { pruneSnapshots, snapshotRetentionDays } from "../src/lib/snapshot-retention";
 import { deliverDueWebhooks } from "../src/lib/webhook-outbox";
 import { pruneRateLimits } from "../src/lib/rate-limit";
+import { deliveryRetentionDays, pruneWebhookDeliveries } from "../src/lib/webhook-delivery-retention";
 import { currentKeyId } from "../src/lib/secret-box";
 
 /** Pruning scans the snapshot table, so run it at most hourly rather than every tick. */
@@ -21,6 +22,7 @@ const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 
 let running = false;
 let lastPruneAt = 0;
+let lastDeliveryPruneAt = 0;
 let delivering = false;
 
 /** Send due watch webhooks (new ones that failed their first attempt, and retries). */
@@ -58,6 +60,27 @@ async function pruneIfDue() {
   }
 }
 
+/**
+ * Terminal webhook deliveries past WEBHOOK_DELIVERY_RETENTION_DAYS (default 30), at most
+ * hourly. Runs on the first tick after a (re)start; safe alongside other workers.
+ */
+async function pruneDeliveriesIfDue() {
+  const days = deliveryRetentionDays();
+  if (days === null || Date.now() - lastDeliveryPruneAt < PRUNE_INTERVAL_MS) return;
+  lastDeliveryPruneAt = Date.now();
+  try {
+    const r = await pruneWebhookDeliveries(days);
+    if (r.deleted > 0) {
+      console.log(
+        `[worker] pruned ${r.deleted} webhook deliver${r.deleted === 1 ? "y" : "ies"} completed over ${days} day(s) ago` +
+          (r.complete ? "" : " (more next run)"),
+      );
+    }
+  } catch (err) {
+    console.error("[worker] webhook delivery pruning failed:", err);
+  }
+}
+
 /** Expired API rate-limit windows (the web app also prunes a batch now and then). */
 async function pruneRateLimitWindows() {
   try {
@@ -85,6 +108,7 @@ async function runOnce() {
         (result.skipped > 0 ? `, ${result.skipped} site(s) skipped (check already running elsewhere)` : ""),
     );
     await pruneIfDue();
+    await pruneDeliveriesIfDue();
     await pruneRateLimitWindows();
   } catch (err) {
     console.error("[worker] run failed:", err);

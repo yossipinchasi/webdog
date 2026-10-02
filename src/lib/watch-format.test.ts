@@ -255,6 +255,7 @@ test("delivery JSON: next attempt only while pending", () => {
     lastStatusCode: 503,
     lastError: "HTTP 503",
     deliveredAt: null,
+    completedAt: null,
     createdAt: new Date("2026-10-01T00:00:00Z"),
   };
   assert.equal(toWebhookDeliveryJson({ ...base, status: "pending" }).nextAttemptAt, "2026-10-01T00:02:00.000Z");

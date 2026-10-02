@@ -401,6 +401,12 @@ export const webhookDelivery = pgTable(
     lastStatusCode: integer("lastStatusCode"),
     lastError: text("lastError"),
     deliveredAt: timestamp("deliveredAt", { withTimezone: true, precision: 3 }),
+    /**
+     * When the delivery reached a terminal status (delivered, failed, canceled), by the
+     * database clock; null while pending (a retried delivery clears it). Retention prunes
+     * on this, never on createdAt (see webhook-delivery-retention.ts).
+     */
+    completedAt: timestamp("completedAt", { withTimezone: true, precision: 3 }),
     createdAt: timestamp("createdAt", { withTimezone: true, precision: 3 })
       .notNull()
       .defaultNow(),
@@ -410,6 +416,8 @@ export const webhookDelivery = pgTable(
     byTarget: index("webhook_delivery_target_idx").on(t.targetId, t.createdAt),
     /** Revocation cancels a client's pending deliveries. */
     byClientStatus: index("webhook_delivery_client_status_idx").on(t.apiClientId, t.status),
+    /** Retention pruning: oldest terminal deliveries first. Pending rows are not indexed. */
+    byCompleted: index("webhook_delivery_completed_idx").on(t.completedAt).where(sql`"completedAt" IS NOT NULL`),
   }),
 );
 
