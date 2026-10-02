@@ -64,8 +64,6 @@ jobs:
     env:
       NEXT_TELEMETRY_DISABLED: "1"
       E2E_PG_BASE: postgres://postgres:postgres@localhost:5432
-      # psql/pg_dump run inside the service container (its client matches the server).
-      E2E_PG_EXEC: docker exec -i ${{ job.services.postgres.id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -82,3 +80,7 @@ jobs:
         # Each step of e2e/ci.sh is reported; any failure fails this check.
         run: bash e2e/ci.sh
         timeout-minutes: 35
+        env:
+          # psql/pg_dump run inside the service container (its client matches the server).
+          # The job context is only available at step level.
+          E2E_PG_EXEC: docker exec -i ${{ job.services.postgres.id }}
