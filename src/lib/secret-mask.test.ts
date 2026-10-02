@@ -7,7 +7,7 @@ import { publicTarget, sharedTarget } from "./target-public";
 // What the browser/API may see of a stored credential.
 
 test("maskSecret keeps only the last 4 characters", () => {
-  assert.equal(maskSecret("sk-proj-abcdefghijklmnop1234"), `${MASK}1234`);
+  assert.equal(maskSecret("test-only-key-abcdefghijklmnop1234"), `${MASK}1234`);
   assert.equal(maskSecret("short"), MASK);
   assert.equal(maskSecret(null), null);
   assert.equal(maskSecret(undefined), null);

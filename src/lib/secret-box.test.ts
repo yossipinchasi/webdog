@@ -41,7 +41,7 @@ const P = "apiClient.webhookSecret";
 const secret = "whsec_" + "a1".repeat(32);
 
 test("round trip, including empty and unicode values", () => {
-  for (const value of [secret, "", "sk-proj-ünïcødé-🔑", "x".repeat(10_000)]) {
+  for (const value of [secret, "", "test-only-ünïcødé-🔑", "x".repeat(10_000)]) {
     const enc = encryptSecret(value, P);
     assert.ok(isEncryptedValue(enc));
     assert.equal(decryptSecret(enc, P), value);
@@ -113,7 +113,7 @@ test("rotation: new writes use the new key; old ciphertexts decrypt via DATA_ENC
 });
 
 test("legacy plaintext passes through; malformed or unknown versions fail", () => {
-  assert.equal(decryptSecret("sk-legacy-plaintext", P), "sk-legacy-plaintext");
+  assert.equal(decryptSecret("test-only-legacy-plaintext", P), "test-only-legacy-plaintext");
   assert.equal(decryptSecret("https://hooks.slack.com/services/T/B/x", P), "https://hooks.slack.com/services/T/B/x");
   for (const bad of ["enc:v2:abc:def:ghi", "enc:v1:", "enc:v1:id:nonce", "enc:v1:id:n:b:extra", "enc:v1:id:AAAA:AAAA"]) {
     assert.throws(() => decryptSecret(bad, P), SecretDecryptionError, bad);
